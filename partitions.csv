@@ -1,0 +1,5 @@
+# ESP-IDF partition table: one factory application, no OTA slots.
+# Keep the factory NVS extent used by the shipping StopWatch layout.
+# Name,    Type, SubType, Offset,   Size,       Flags
+nvs,       data, nvs,     0x9000,   0x5000,
+factory,   app,  factory, 0x10000,  0xF00000,

@@ -1,0 +1,20 @@
+name: Push components to Espressif Component Service
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  upload_components:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: espressif/upload-components-ci-action@v2
+        with:
+          components: "bmi270_bmm150_sensor: ."
+          version: ${{ github.ref_name }}
+          namespace: "lbuque"
+          api_token: ${{ secrets.IDF_COMPONENT_API_TOKEN }}
