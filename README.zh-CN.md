@@ -329,6 +329,19 @@ git diff --check
 
 安全敏感问题请私下联系仓库所有者，不要在 issue 中公开凭据或设备数据。
 
+## 致谢
+
+时迹 ChronoTrace 离不开开源社区与硬件团队的长期积累，特别感谢：
+
+- [V4C38/esp32-fluidbox](https://github.com/V4C38/esp32-fluidbox)，提供了最初的流体求解器与渲染基础，让这个粒子世界成为可能；
+- Espressif，提供 ESP-IDF 与 ESP32-S3 软件生态；
+- M5Stack，提供 StopWatch 硬件平台与开放硬件资源；
+- Bosch Sensortec 以及本项目所用 BMI270 传感器源码的维护者；
+- Adobe 与 Google，提供思源黑体和思源宋体字族；
+- 每一位体验设备、指出视觉与交互问题、帮助时迹逐个细节完善的朋友。
+
+也感谢每一位愿意体验、研究或继续完善这个项目的人。
+
 ## 版权、素材与许可说明
 
 时迹 ChronoTrace 由**个人开发者：小奥**开发。版权 © 2026 小奥。

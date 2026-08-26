@@ -371,6 +371,24 @@ and privacy review and confirm repository Secret Scanning and Push Protection.
 For a security-sensitive report, contact the repository owner privately instead
 of publishing credentials or device data in an issue.
 
+## Acknowledgements
+
+ChronoTrace stands on the work of many open-source projects and hardware teams.
+Special thanks to:
+
+- [V4C38/esp32-fluidbox](https://github.com/V4C38/esp32-fluidbox) for the
+  original fluid solver and rendering foundation that made this particle world
+  possible;
+- Espressif for ESP-IDF and the ESP32-S3 software ecosystem;
+- M5Stack for the StopWatch hardware platform and its open hardware resources;
+- Bosch Sensortec and the maintainers of the BMI270 sensor sources used by this
+  project;
+- Adobe and Google for the Source Han Sans and Source Han Serif type families;
+- every tester and friend who observed the device, reported visual or interaction
+  problems, and helped refine ChronoTrace one detail at a time.
+
+Thank you to everyone who explores, studies, or improves this project.
+
 ## Copyright, assets & licenses
 
 ChronoTrace is developed by **Xiao Ao**. Copyright © 2026 Xiao Ao.
