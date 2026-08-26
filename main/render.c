@@ -103,6 +103,8 @@ static volatile uint32_t s_wifi_editor_revision;
 static volatile bool s_operation_guide_visible;
 static volatile uint8_t s_operation_guide_page;
 static volatile uint32_t s_operation_guide_revision;
+static volatile bool s_about_visible;
+static volatile uint32_t s_about_revision;
 static volatile bool s_shape_picker_visible;
 static volatile uint8_t s_shape_picker_page;
 static volatile uint8_t s_shape_picker_custom_count;
@@ -404,6 +406,14 @@ void render_set_operation_guide(bool visible, uint8_t language, uint8_t page)
     s_operation_guide_visible = visible;
     s_operation_guide_page = page ? 1 : 0;
     s_operation_guide_revision++;
+    s_force_full = true;
+}
+
+void render_set_about(bool visible, uint8_t language)
+{
+    s_ui_language = language ? 1 : 0;
+    s_about_visible = visible;
+    s_about_revision++;
     s_force_full = true;
 }
 
@@ -1512,21 +1522,35 @@ static uint16_t boot_fade_rgb565(uint16_t source, float opacity)
     return boot_fade_color(red, green, blue, opacity);
 }
 
-static void draw_boot_logo(uint16_t *buf, int band_y0, float opacity)
+static void draw_logo_scaled(uint16_t *buf, int band_y0,
+                             int center_x, int center_y, int size,
+                             float opacity)
 {
-    const int logo_x = (LCD_H_RES - BOOT_LOGO_WIDTH) / 2;
-    const int logo_y = (LCD_V_RES - BOOT_LOGO_HEIGHT) / 2;
+    if (size <= 0) return;
+    const int logo_x = center_x - size / 2;
+    const int logo_y = center_y - size / 2;
     const int first_y = band_y0 > logo_y ? band_y0 : logo_y;
-    const int last_y = band_y0 + BAND_ROWS < logo_y + BOOT_LOGO_HEIGHT ?
-                       band_y0 + BAND_ROWS : logo_y + BOOT_LOGO_HEIGHT;
+    const int last_y = band_y0 + BAND_ROWS < logo_y + size ?
+                       band_y0 + BAND_ROWS : logo_y + size;
     for (int screen_y = first_y; screen_y < last_y; screen_y++) {
-        const int source_y = screen_y - logo_y;
-        uint16_t *destination = buf + (screen_y - band_y0) * LCD_H_RES + logo_x;
-        const uint16_t *source = g_boot_logo_rgb565 + source_y * BOOT_LOGO_WIDTH;
-        for (int x = 0; x < BOOT_LOGO_WIDTH; x++) {
-            destination[x] = boot_fade_rgb565(source[x], opacity);
+        if (screen_y < 0 || screen_y >= LCD_V_RES) continue;
+        const int source_y = (screen_y - logo_y) * BOOT_LOGO_HEIGHT / size;
+        uint16_t *destination = buf + (screen_y - band_y0) * LCD_H_RES;
+        const uint16_t *source = g_boot_logo_rgb565 +
+                                 source_y * BOOT_LOGO_WIDTH;
+        for (int dx = 0; dx < size; dx++) {
+            const int screen_x = logo_x + dx;
+            if (screen_x < 0 || screen_x >= LCD_H_RES) continue;
+            const int source_x = dx * BOOT_LOGO_WIDTH / size;
+            destination[screen_x] = boot_fade_rgb565(source[source_x], opacity);
         }
     }
+}
+
+static void draw_boot_logo(uint16_t *buf, int band_y0, float opacity)
+{
+    draw_logo_scaled(buf, band_y0, LCD_H_RES / 2, LCD_V_RES / 2,
+                     BOOT_LOGO_WIDTH, opacity);
 }
 
 static void draw_boot_band(uint16_t *buf, int band_y0, float opacity,
@@ -1882,7 +1906,8 @@ static void draw_settings_band(uint16_t *buf, int band_y0)
                                ui_font_timer_label(), 0,
                                SWAP16(rgb565(27, 24, 16)));
     draw_text_centered_in_rect(buf, band_y0,
-                               english ? "Operation Guide" : "操作指南",
+                               device_page ? (english ? "About" : "关于") :
+                                             (english ? "Operation Guide" : "操作指南"),
                                238, 324, 418, 386,
                                ui_font_timer_label(), 0,
                                SWAP16(rgb565(247, 250, 255)));
@@ -2512,6 +2537,63 @@ static void draw_operation_guide_band(uint16_t *buf, int band_y0)
                                font, 0, SWAP16(rgb565(247, 250, 255)));
 }
 
+static void draw_about_band(uint16_t *buf, int band_y0)
+{
+    memset(buf, 0, BAND_PIXELS * sizeof(uint16_t));
+    const bool english = s_ui_language != 0;
+    const uint16_t white = SWAP16(rgb565(240, 244, 248));
+    const uint16_t muted = SWAP16(rgb565(154, 169, 181));
+    const uint16_t cyan = SWAP16(rgb565(30, 216, 255));
+
+    draw_text_centered_spaced(buf, band_y0,
+                              english ? "About" : "关于",
+                              233, 20, ui_font_message(), 1, white);
+
+    // Reuse the exact master-logo asset from the boot screen. A compact
+    // 126-pixel rendering is large enough to preserve its glass rim and three
+    // flowing strokes without crowding the information below.
+    draw_logo_scaled(buf, band_y0, 233, 123, 126, 1.0f);
+    draw_text_centered_spaced(buf, band_y0,
+                              english ? "ChronoTrace" : "时迹 · ChronoTrace",
+                              233, 190, ui_font_message(), 1, white);
+
+    draw_round_rect(buf, band_y0, 42, 226, 424, 347, 25,
+                    SWAP16(rgb565(9, 18, 25)));
+
+    const ui_font_t *font = ui_font_timer_label();
+    const char *developer = english ? "Developer: Xiao Ao" : "个人开发者：小奥";
+    const char *version = english ? "Version: " CHRONOTRACE_VERSION :
+                                    "版本号：" CHRONOTRACE_VERSION;
+    const char *copyright = english ?
+        "Copyright " CHRONOTRACE_COPYRIGHT_YEAR " Xiao Ao" :
+        "版权 © " CHRONOTRACE_COPYRIGHT_YEAR " 小奥";
+    draw_text_centered_spaced(buf, band_y0, developer,
+                              233, 237, font, 0, white);
+    draw_line_round(buf, band_y0, 82, 269, 384, 269, 0,
+                    SWAP16(rgb565(40, 56, 67)));
+    draw_text_centered_spaced(buf, band_y0, version,
+                              233, 279, font, 0, cyan);
+    draw_text_centered_spaced(buf, band_y0, copyright,
+                              233, 317, font, 0, muted);
+
+    draw_round_rect(buf, band_y0, -28, 374, 230, 432, 22,
+                    SWAP16(rgb565(72, 53, 10)));
+    draw_round_rect(buf, band_y0, -26, 376, 228, 430, 20,
+                    SWAP16(rgb565(247, 185, 36)));
+    draw_round_rect(buf, band_y0, 236, 374, 493, 432, 22,
+                    SWAP16(rgb565(8, 48, 92)));
+    draw_round_rect(buf, band_y0, 238, 376, 491, 430, 20,
+                    SWAP16(rgb565(28, 125, 245)));
+    draw_text_centered_in_rect(buf, band_y0,
+                               english ? "Exit" : "退出",
+                               48, 376, 228, 430,
+                               font, 0, SWAP16(rgb565(27, 24, 16)));
+    draw_text_centered_in_rect(buf, band_y0,
+                               english ? "Settings" : "返回设置",
+                               238, 376, 418, 430,
+                               font, 0, SWAP16(rgb565(247, 250, 255)));
+}
+
 static void draw_hourglass(uint16_t *buf, int band_y0)
 {
     draw_rgba_icon(buf, band_y0, countdown_timer_icon_rgba,
@@ -2708,6 +2790,7 @@ bool render_frame(void)
     static uint32_t settings_animation_seen;
     static uint32_t guide_revision_seen;
     static uint32_t guide_animation_seen;
+    static uint32_t about_revision_seen;
     static uint32_t shape_picker_revision_seen;
     static uint32_t wifi_editor_revision_seen;
     static uint32_t weather_revision_seen;
@@ -2786,6 +2869,23 @@ bool render_frame(void)
     }
     if (guide_revision_seen != 0) {
         guide_revision_seen = 0;
+        s_force_full = true;
+    }
+
+    if (s_about_visible) {
+        const uint32_t revision = s_about_revision;
+        if (revision == about_revision_seen && !s_force_full) return false;
+        for (int band = 0; band < BAND_COUNT; band++) {
+            uint16_t *buf = display_acquire_band();
+            draw_about_band(buf, band * BAND_ROWS);
+            display_flush_band(band, buf);
+        }
+        about_revision_seen = revision;
+        s_force_full = false;
+        return true;
+    }
+    if (about_revision_seen != 0) {
+        about_revision_seen = 0;
         s_force_full = true;
     }
 

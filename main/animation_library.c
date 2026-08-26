@@ -11,12 +11,12 @@
 
 static const char *const kNamesCn[ANIMATION_LIBRARY_COUNT] = {
     "上箭头", "下箭头", "左箭头", "右箭头",
-    "呼吸心跳", "DNA 双螺旋", "烟花", "粒子雨",
+    "呼吸心跳", "DNA 双螺旋", "烟花", "粒子雨", "I LOVE YOU",
 };
 
 static const char *const kNamesEn[ANIMATION_LIBRARY_COUNT] = {
     "Arrow Up", "Arrow Down", "Arrow Left", "Arrow Right",
-    "Heartbeat", "DNA Helix", "Firework", "Particle Rain",
+    "Heartbeat", "DNA Helix", "Firework", "Particle Rain", "I LOVE YOU",
 };
 
 static void raw_pixel(uint8_t *bitmap, int x, int y)
@@ -201,6 +201,82 @@ static void draw_particle_rain(uint8_t *bitmap, float phase)
     }
 }
 
+static const uint8_t *marquee_glyph(char ch)
+{
+    static const uint8_t glyph_i[7] = {
+        0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e,
+    };
+    static const uint8_t glyph_l[7] = {
+        0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f,
+    };
+    static const uint8_t glyph_o[7] = {
+        0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e,
+    };
+    static const uint8_t glyph_v[7] = {
+        0x11, 0x11, 0x11, 0x11, 0x0a, 0x0a, 0x04,
+    };
+    static const uint8_t glyph_e[7] = {
+        0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f,
+    };
+    static const uint8_t glyph_y[7] = {
+        0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04,
+    };
+    static const uint8_t glyph_u[7] = {
+        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e,
+    };
+    switch (ch) {
+        case 'I': return glyph_i;
+        case 'L': return glyph_l;
+        case 'O': return glyph_o;
+        case 'V': return glyph_v;
+        case 'E': return glyph_e;
+        case 'Y': return glyph_y;
+        case 'U': return glyph_u;
+        default: return NULL;
+    }
+}
+
+static void draw_marquee_copy(uint8_t *bitmap, uint8_t *owners, int origin_x)
+{
+    static const char message[] = "I LOVE YOU";
+    enum { GLYPH_SCALE = 2, GLYPH_ADVANCE = 12, TOP = 25 };
+    uint8_t owner = 0;
+    for (int letter = 0; message[letter] != '\0'; letter++) {
+        const uint8_t *glyph = marquee_glyph(message[letter]);
+        if (!glyph) continue;
+        owner++;
+        const int left = origin_x + letter * GLYPH_ADVANCE;
+        for (int row = 0; row < 7; row++) {
+            for (int column = 0; column < 5; column++) {
+                if ((glyph[row] & (1U << (4 - column))) == 0) continue;
+                for (int sy = 0; sy < GLYPH_SCALE; sy++) {
+                    for (int sx = 0; sx < GLYPH_SCALE; sx++) {
+                        const int x = left + column * GLYPH_SCALE + sx;
+                        const int y = TOP + row * GLYPH_SCALE + sy;
+                        raw_pixel(bitmap, x, y);
+                        if (owners && x >= 0 && x < HANDWRITING_W &&
+                            y >= 0 && y < HANDWRITING_H) {
+                            owners[y * HANDWRITING_W + x] = owner;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void draw_i_love_you(uint8_t *bitmap, uint8_t *owners, float phase)
+{
+    // One phrase enters completely from the right and leaves through the left.
+    // As new bitmap columns become visible, the simulator admits the next
+    // pre-reserved pool beads one by one; it never borrows outside that cohort.
+    enum { MESSAGE_WIDTH = 118, TRAVEL = 178 };
+    const int offset = (int)floorf(fminf(fmaxf(phase, 0.0f), 1.0f) *
+                                   (float)TRAVEL);
+    const int origin = 60 - offset;
+    draw_marquee_copy(bitmap, owners, origin);
+}
+
 const char *animation_library_name(uint8_t index, bool english)
 {
     if (index >= ANIMATION_LIBRARY_COUNT) return english ? "Animation" : "动画";
@@ -264,6 +340,10 @@ bool animation_library_bitmap(uint8_t index, float phase,
         draw_particle_rain(bitmap, phase);
         return true;
     }
+    if (index == 8) {
+        draw_i_love_you(bitmap, NULL, phase);
+        return true;
+    }
 
     // Draw one canonical right-pointing arrow, then rotate its integer bitmap
     // coordinates for the other three directions. This guarantees that the
@@ -319,5 +399,16 @@ bool animation_library_bitmap(uint8_t index, float phase,
             raw_pixel(bitmap, out_x, out_y);
         }
     }
+    return true;
+}
+
+bool animation_library_bitmap_owned(uint8_t index, float phase,
+                                    uint8_t bitmap[HANDWRITING_BYTES],
+                                    uint8_t owners[HANDWRITING_W * HANDWRITING_H])
+{
+    if (!bitmap || !owners || index != 8) return false;
+    memset(bitmap, 0, HANDWRITING_BYTES);
+    memset(owners, 0, HANDWRITING_W * HANDWRITING_H);
+    draw_i_love_you(bitmap, owners, phase);
     return true;
 }

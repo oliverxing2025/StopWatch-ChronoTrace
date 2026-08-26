@@ -134,6 +134,8 @@ static int s_form_weather_digit_begin = -1;
 static uint8_t s_form_handwriting_color;
 static int s_animation_particle_limit = -1;
 static bool s_animation_cohort_locked;
+static bool s_animation_owned_slots;
+static uint8_t s_animation_slot_active[PARTICLE_MAX];
 static float s_animation_last_motion_x;
 static float s_animation_last_motion_y;
 static bool s_form_pose_needs_snap;
@@ -1528,6 +1530,7 @@ void sim_show_handwriting(const uint8_t *bitmap, int width, int height, uint8_t 
 {
     s_animation_cohort_locked = false;
     s_animation_particle_limit = -1;
+    s_animation_owned_slots = false;
     set_handwriting_formation(bitmap, width, height, color, true, false, true,
                               false, false, 0);
 }
@@ -1545,6 +1548,7 @@ void sim_show_animation_bitmap(const uint8_t *bitmap, int width, int height,
 {
     s_animation_particle_limit = -1;
     s_animation_cohort_locked = false;
+    s_animation_owned_slots = false;
     set_handwriting_formation(bitmap, width, height, color, true, true, true,
                               false, false, fixed_particle_count);
     if (preserve_particle_cohort) {
@@ -1603,6 +1607,95 @@ void sim_update_animation_bitmap(const uint8_t *bitmap, int width, int height,
     }
 }
 
+#define MARQUEE_OWNER_COUNT 8
+#define MARQUEE_PARTICLES_PER_OWNER 35
+#define MARQUEE_OWNER_INK_MAX 256
+
+static void set_owned_animation_formation(const uint8_t *bitmap,
+                                          const uint8_t *owners,
+                                          int width, int height,
+                                          uint8_t color, bool announce)
+{
+    if (!bitmap || !owners || width <= 0 || height <= 0) return;
+    static EXT_RAM_BSS_ATTR uint16_t
+        owner_ink[MARQUEE_OWNER_COUNT][MARQUEE_OWNER_INK_MAX];
+    uint16_t owner_count[MARQUEE_OWNER_COUNT] = {0};
+    for (int bit = 0; bit < width * height; bit++) {
+        if ((bitmap[bit >> 3] & (1U << (bit & 7))) == 0) continue;
+        const uint8_t owner = owners[bit];
+        if (owner == 0 || owner > MARQUEE_OWNER_COUNT) continue;
+        uint16_t *count = &owner_count[owner - 1];
+        if (*count < MARQUEE_OWNER_INK_MAX) {
+            owner_ink[owner - 1][*count] = (uint16_t)bit;
+            (*count)++;
+        }
+    }
+
+    const bool already_active = s_form_until_us != 0 &&
+                                s_animation_owned_slots;
+    const int reserved = MARQUEE_OWNER_COUNT * MARQUEE_PARTICLES_PER_OWNER;
+    memset(s_animation_slot_active, 0, sizeof(s_animation_slot_active));
+    for (int owner = 0; owner < MARQUEE_OWNER_COUNT; owner++) {
+        const int visible = owner_count[owner];
+        const int active = visible < MARQUEE_PARTICLES_PER_OWNER ?
+                           visible : MARQUEE_PARTICLES_PER_OWNER;
+        for (int bead = 0; bead < active; bead++) {
+            const int source = (int)(((int64_t)bead * visible) / active);
+            const int bit = owner_ink[owner][source];
+            const int x = bit % width;
+            const int y = bit / width;
+            const int slot = owner * MARQUEE_PARTICLES_PER_OWNER + bead;
+            s_form_target[slot][0] = ((float)x - (float)(width - 1) * 0.5f) * 7.0f;
+            s_form_target[slot][1] = ((float)y - (float)(height - 1) * 0.5f) * 7.0f;
+            s_form_target[slot][2] = WALL_MARGIN + 5.0f +
+                                     (float)(bead % 3) * 2.0f;
+            s_animation_slot_active[slot] = 1;
+        }
+    }
+
+    s_form_visible_count = s_count;
+    s_form_clock_count = reserved;
+    s_form_halo_count = 0;
+    if (!already_active) {
+        for (int i = 0; i < s_count; i++) s_slot[i] = (int16_t)i;
+        s_form_pose_needs_snap = true;
+        s_form_start_us = esp_timer_get_time();
+    }
+    s_form_until_us = INT64_MAX;
+    s_form_handwriting = true;
+    s_form_animation = true;
+    s_form_weather = false;
+    s_form_time = false;
+    s_form_analog = false;
+    s_form_random_shape = false;
+    s_form_battery = false;
+    s_time_digits_valid = false;
+    memset(s_digit_transition_slot, 0, sizeof(s_digit_transition_slot));
+    s_form_handwriting_color = color;
+    s_animation_particle_limit = reserved;
+    s_animation_cohort_locked = false;
+    s_animation_owned_slots = true;
+    if (announce) {
+        ESP_LOGI(TAG, "owned marquee: %d letters x %d reserved particles",
+                 MARQUEE_OWNER_COUNT, MARQUEE_PARTICLES_PER_OWNER);
+    }
+}
+
+void sim_show_owned_animation_bitmap(const uint8_t *bitmap,
+                                     const uint8_t *owners,
+                                     int width, int height, uint8_t color)
+{
+    s_animation_owned_slots = false;
+    set_owned_animation_formation(bitmap, owners, width, height, color, true);
+}
+
+void sim_update_owned_animation_bitmap(const uint8_t *bitmap,
+                                       const uint8_t *owners,
+                                       int width, int height, uint8_t color)
+{
+    set_owned_animation_formation(bitmap, owners, width, height, color, false);
+}
+
 void sim_end_formation(void)
 {
     s_form_visible_count = s_count;
@@ -1615,6 +1708,7 @@ void sim_end_formation(void)
     s_form_random_shape = false;
     s_form_battery = false;
     s_animation_cohort_locked = false;
+    s_animation_owned_slots = false;
     s_form_pose_needs_snap = false;
 }
 
@@ -1629,6 +1723,7 @@ void sim_release_formation(void)
     for (int i = 0; i < s_count; i++) {
         const int slot = s_slot[i];
         if (slot < 0 || slot >= s_form_clock_count) continue;
+        if (s_animation_owned_slots && !s_animation_slot_active[slot]) continue;
         const float dx = s_p->pos[i][0] - BOX_W * 0.5f;
         const float dy = s_p->pos[i][1] - BOX_H * 0.5f;
         const float length = sqrtf(dx * dx + dy * dy);
@@ -1648,6 +1743,7 @@ void sim_release_formation(void)
     s_form_random_shape = false;
     s_form_battery = false;
     s_animation_cohort_locked = false;
+    s_animation_owned_slots = false;
     s_form_pose_needs_snap = false;
     ESP_LOGI(TAG, "formation released into natural fluid motion");
 }
@@ -1677,14 +1773,147 @@ void sim_directional_gust(float x, float y)
     }
 }
 
+static int select_music_surface(int *selected, float *selected_depth,
+                                int capacity, int side)
+{
+    int selected_count = 0;
+    const float cx = BOX_W * 0.5f;
+    const float cy = BOX_H * 0.5f;
+    const float tangent_x = -s_form_down_y;
+    const float tangent_y = s_form_down_x;
+    for (int i = 0; i < s_count; i++) {
+        if (s_density[i] < s_rest_density * 0.30f) continue;
+        const float px = s_p->pos[i][0] - cx;
+        const float py = s_p->pos[i][1] - cy;
+        const float tangent = px * tangent_x + py * tangent_y;
+        if (side != 0 && tangent * (float)side < 0.0f) continue;
+        const float depth = px * s_form_down_x + py * s_form_down_y;
+        int insert = selected_count;
+        if (insert > capacity) insert = capacity;
+        while (insert > 0 && depth < selected_depth[insert - 1]) {
+            if (insert < capacity) {
+                selected[insert] = selected[insert - 1];
+                selected_depth[insert] = selected_depth[insert - 1];
+            }
+            insert--;
+        }
+        if (insert < capacity) {
+            selected[insert] = i;
+            selected_depth[insert] = depth;
+            if (selected_count < capacity) selected_count++;
+        }
+    }
+    return selected_count;
+}
+
 void sim_audio_pulse(float strength)
 {
     if (strength < 0.0f) strength = 0.0f;
     if (strength > 1.0f) strength = 1.0f;
-    const float kick = 270.0f + strength * 430.0f;
-    for (int i = 0; i < s_count; i++) {
-        s_p->vel[i][0] += (rand_unit() - 0.5f) * kick * 0.28f;
-        s_p->vel[i][1] -= kick * (0.55f + rand_unit() * 0.35f);
+
+    // Select a small group from the dense, upper surface of the pool. Moving
+    // every particle together only translates the pool and the solver quickly
+    // cancels that motion; ejecting surface beads creates the visible musical
+    // jump the interaction calls for, while those same real particles still
+    // fall back under gravity afterwards.
+    enum { MUSIC_EJECT_MAX = 36 };
+    int selected[MUSIC_EJECT_MAX];
+    float selected_depth[MUSIC_EJECT_MAX];
+    const int wanted = 14 + (int)(strength * 22.0f + 0.5f);
+    int selected_count = select_music_surface(selected, selected_depth,
+                                              MUSIC_EJECT_MAX, 0);
+
+    if (selected_count > wanted) selected_count = wanted;
+    const float kick = 1450.0f + strength * 1850.0f;
+    const float tangent_x = -s_form_down_y;
+    const float tangent_y = s_form_down_x;
+    for (int n = 0; n < selected_count; n++) {
+        const int i = selected[n];
+        const float lift = kick * (0.82f + rand_unit() * 0.34f);
+        const float spread = (rand_unit() - 0.5f) * kick * 0.34f;
+        s_p->vel[i][0] -= s_form_down_x * lift;
+        s_p->vel[i][1] -= s_form_down_y * lift;
+        s_p->vel[i][0] += tangent_x * spread;
+        s_p->vel[i][1] += tangent_y * spread;
+        s_p->vel[i][2] += (rand_unit() - 0.5f) * kick * 0.18f;
+    }
+}
+
+void sim_audio_wave(float strength, bool reverse)
+{
+    if (strength < 0.0f) strength = 0.0f;
+    if (strength > 1.0f) strength = 1.0f;
+    enum { MUSIC_WAVE_MAX = 76 };
+    int selected[MUSIC_WAVE_MAX];
+    float selected_depth[MUSIC_WAVE_MAX];
+    const int count = select_music_surface(selected, selected_depth,
+                                           MUSIC_WAVE_MAX, 0);
+    const float cx = BOX_W * 0.5f;
+    const float cy = BOX_H * 0.5f;
+    const float tangent_x = -s_form_down_y;
+    const float tangent_y = s_form_down_x;
+    const float kick = 260.0f + strength * 520.0f;
+    const float phase_offset = reverse ? 3.14159265f : 0.0f;
+    for (int n = 0; n < count; n++) {
+        const int i = selected[n];
+        const float tangent = (s_p->pos[i][0] - cx) * tangent_x +
+                              (s_p->pos[i][1] - cy) * tangent_y;
+        const float crest = 0.28f + 0.72f *
+            (0.5f + 0.5f * sinf(tangent * 0.040f + phase_offset));
+        const float lift = kick * crest;
+        s_p->vel[i][0] -= s_form_down_x * lift;
+        s_p->vel[i][1] -= s_form_down_y * lift;
+    }
+}
+
+void sim_audio_side_pulse(float strength, bool right_side)
+{
+    if (strength < 0.0f) strength = 0.0f;
+    if (strength > 1.0f) strength = 1.0f;
+    enum { MUSIC_SIDE_MAX = 18 };
+    int selected[MUSIC_SIDE_MAX];
+    float selected_depth[MUSIC_SIDE_MAX];
+    int count = select_music_surface(selected, selected_depth,
+                                     MUSIC_SIDE_MAX, right_side ? 1 : -1);
+    const int wanted = 8 + (int)(strength * 10.0f + 0.5f);
+    if (count > wanted) count = wanted;
+    const float kick = 980.0f + strength * 1250.0f;
+    const float tangent_x = -s_form_down_y;
+    const float tangent_y = s_form_down_x;
+    const float side_sign = right_side ? 1.0f : -1.0f;
+    for (int n = 0; n < count; n++) {
+        const int i = selected[n];
+        const float lift = kick * (0.82f + rand_unit() * 0.28f);
+        const float sweep = kick * side_sign * (0.07f + rand_unit() * 0.09f);
+        s_p->vel[i][0] -= s_form_down_x * lift;
+        s_p->vel[i][1] -= s_form_down_y * lift;
+        s_p->vel[i][0] += tangent_x * sweep;
+        s_p->vel[i][1] += tangent_y * sweep;
+    }
+}
+
+void sim_audio_sparks(float strength)
+{
+    if (strength < 0.0f) strength = 0.0f;
+    if (strength > 1.0f) strength = 1.0f;
+    enum { MUSIC_SPARK_MAX = 10 };
+    int selected[MUSIC_SPARK_MAX];
+    float selected_depth[MUSIC_SPARK_MAX];
+    int count = select_music_surface(selected, selected_depth,
+                                     MUSIC_SPARK_MAX, 0);
+    const int wanted = 4 + (int)(strength * 6.0f + 0.5f);
+    if (count > wanted) count = wanted;
+    const float kick = 1850.0f + strength * 2100.0f;
+    const float tangent_x = -s_form_down_y;
+    const float tangent_y = s_form_down_x;
+    for (int n = 0; n < count; n++) {
+        const int i = selected[n];
+        const float lift = kick * (0.86f + rand_unit() * 0.32f);
+        const float spread = (rand_unit() - 0.5f) * kick * 0.52f;
+        s_p->vel[i][0] -= s_form_down_x * lift;
+        s_p->vel[i][1] -= s_form_down_y * lift;
+        s_p->vel[i][0] += tangent_x * spread;
+        s_p->vel[i][1] += tangent_y * spread;
         s_p->vel[i][2] += (rand_unit() - 0.5f) * kick * 0.22f;
     }
 }
@@ -2326,6 +2555,8 @@ static void update_formation_pose(float dt, const sim_forces_t *forces)
 static bool formation_target(int slot, int64_t now, float *x, float *y, float *z)
 {
     if (slot < 0 || slot >= s_count || now >= s_form_until_us) return false;
+    if (s_animation_owned_slots && slot < s_form_clock_count &&
+        !s_animation_slot_active[slot]) return false;
     if (!s_form_handwriting && s_digit_transition_slot[slot] &&
         now - s_digit_transition_start_us < DIGIT_RELEASE_US) {
         return false;
@@ -2478,25 +2709,30 @@ static void apply_formation(void)
         // head into an indistinct cluster even though the bitmap is correct.
         const bool moving_arrow = clock_particle && s_form_animation &&
                                   s_animation_particle_limit >= 0;
-        const float pull = moving_arrow ? 0.34f :
+        const bool progressive_assembly = clock_particle &&
+                                          s_animation_owned_slots;
+        const float pull = progressive_assembly ? 0.12f :
+                           (moving_arrow ? 0.34f :
                            (weather_digit ? 0.32f :
                            (stable_battery ? 0.24f :
                             (clock_particle ?
-                                 (s_form_handwriting ? 0.20f : 0.16f) : 0.065f)));
+                                 (s_form_handwriting ? 0.20f : 0.16f) : 0.065f))));
         s_p->pos[i][0] += dx * pull;
         s_p->pos[i][1] += dy * pull;
         s_p->pos[i][2] += dz * pull;
 
-        const float velocity_keep = moving_arrow ? 0.02f :
+        const float velocity_keep = progressive_assembly ? 0.35f :
+                                    (moving_arrow ? 0.02f :
                                     (weather_digit ? 0.03f :
                                     (stable_battery ? 0.05f :
                                      (clock_particle ?
                                           (s_form_handwriting ? 0.05f : 0.16f) :
-                                          0.30f)));
-        const float target_velocity = moving_arrow ? 0.46f :
+                                          0.30f))));
+        const float target_velocity = progressive_assembly ? 0.12f :
+                                      (moving_arrow ? 0.46f :
                                       (weather_digit ? 0.48f :
                                       (stable_battery ? 0.36f :
-                                       (s_form_handwriting ? 0.10f : 0.30f)));
+                                       (s_form_handwriting ? 0.10f : 0.30f))));
         s_p->vel[i][0] = s_p->vel[i][0] * velocity_keep + dx * target_velocity;
         s_p->vel[i][1] = s_p->vel[i][1] * velocity_keep + dy * target_velocity;
         s_p->vel[i][2] = s_p->vel[i][2] * velocity_keep + dz * target_velocity;

@@ -10,11 +10,16 @@ extern "C" {
 #endif
 
 #define ANIMATION_ARROW_COUNT 4
-#define ANIMATION_LIBRARY_COUNT 8
+#define ANIMATION_LIBRARY_COUNT 9
 
 const char *animation_library_name(uint8_t index, bool english);
 bool animation_library_bitmap(uint8_t index, float phase,
                               uint8_t bitmap[HANDWRITING_BYTES]);
+// I LOVE YOU uses an owner id for every lit cell so each letter retains its
+// own particle cohort throughout the marquee animation.
+bool animation_library_bitmap_owned(uint8_t index, float phase,
+                                    uint8_t bitmap[HANDWRITING_BYTES],
+                                    uint8_t owners[HANDWRITING_W * HANDWRITING_H]);
 bool animation_library_is_continuous(uint8_t index);
 // Returns the arrow centre's screen-space displacement in the fixed animation
 // canvas. The simulator uses this after the arrow is fully assembled so the

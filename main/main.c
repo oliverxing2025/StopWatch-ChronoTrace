@@ -10,6 +10,7 @@
 #include "button.h"
 #include "config.h"
 #include "display.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -43,6 +44,13 @@ static bool s_audio_ready;
 static bool s_battery_ready;
 static bool s_touch_ready;
 static float s_last_bass;
+static float s_last_music_mid;
+static float s_last_music_treble;
+static int64_t s_last_music_pulse_us;
+static int64_t s_last_music_side_us;
+static int64_t s_last_music_spark_us;
+static bool s_music_right_side;
+static bool s_music_wave_reverse;
 static bool s_clock_held;
 static uint8_t s_clock_hours;
 static uint8_t s_clock_minutes;
@@ -73,6 +81,7 @@ static bool s_settings_open;
 static uint8_t s_settings_page;
 static bool s_operation_guide_open;
 static uint8_t s_operation_guide_page;
+static bool s_about_open;
 static bool s_settings_touch_down;
 static uint8_t s_settings_touch_target;
 static uint16_t s_settings_touch_x;
@@ -124,6 +133,8 @@ static float s_animation_phase;
 static int64_t s_animation_next_frame_us;
 static bool s_animation_restart_pending;
 static int64_t s_animation_restart_us;
+static EXT_RAM_BSS_ATTR uint8_t
+    s_animation_owner_map[HANDWRITING_W * HANDWRITING_H];
 
 #define HANDWRITING_GLYPH_US 2800000
 #define SHAPE_PLAY_US 3200000
@@ -330,11 +341,20 @@ static void show_animation_item(uint8_t item)
     s_animation_phase = 0.0f;
     s_animation_restart_pending = false;
     s_animation_current = item;
-    if (!animation_library_bitmap(item, s_animation_phase, bitmap)) return;
-    const uint16_t fixed_particles = item == 6 ? 60 : 0;
-    sim_show_animation_bitmap(bitmap, HANDWRITING_W, HANDWRITING_H,
-                              255, fixed_particles,
-                              item >= ANIMATION_ARROW_COUNT);
+    const bool ready = item == 8 ?
+        animation_library_bitmap_owned(item, s_animation_phase,
+                                       bitmap, s_animation_owner_map) :
+        animation_library_bitmap(item, s_animation_phase, bitmap);
+    if (!ready) return;
+    if (item == 8) {
+        sim_show_owned_animation_bitmap(bitmap, s_animation_owner_map,
+                                        HANDWRITING_W, HANDWRITING_H, 255);
+    } else {
+        const uint16_t fixed_particles = item == 6 ? 60 : 0;
+        sim_show_animation_bitmap(bitmap, HANDWRITING_W, HANDWRITING_H,
+                                  255, fixed_particles,
+                                  item >= ANIMATION_ARROW_COUNT);
+    }
     s_animation_active = true;
     s_animation_picker_selected = true;
     s_animation_next_frame_us = esp_timer_get_time() + ANIMATION_FRAME_US;
@@ -369,14 +389,27 @@ static void update_animation_frame(int64_t now)
         if (now < s_animation_restart_us) return;
         s_animation_restart_pending = false;
         s_animation_phase = 0.0f;
-        if (animation_library_bitmap(s_animation_current, s_animation_phase,
-                                     bitmap)) {
-            const uint16_t fixed_particles =
-                s_animation_current == 6 ? 60 : 0;
-            sim_show_animation_bitmap(bitmap, HANDWRITING_W, HANDWRITING_H,
-                                      255, fixed_particles,
-                                      s_animation_current >=
-                                          ANIMATION_ARROW_COUNT);
+        const bool ready = s_animation_current == 8 ?
+            animation_library_bitmap_owned(s_animation_current,
+                                           s_animation_phase,
+                                           bitmap, s_animation_owner_map) :
+            animation_library_bitmap(s_animation_current,
+                                     s_animation_phase, bitmap);
+        if (ready) {
+            if (s_animation_current == 8) {
+                sim_show_owned_animation_bitmap(bitmap,
+                                                s_animation_owner_map,
+                                                HANDWRITING_W,
+                                                HANDWRITING_H, 255);
+            } else {
+                const uint16_t fixed_particles =
+                    s_animation_current == 6 ? 60 : 0;
+                sim_show_animation_bitmap(bitmap, HANDWRITING_W,
+                                          HANDWRITING_H, 255,
+                                          fixed_particles,
+                                          s_animation_current >=
+                                              ANIMATION_ARROW_COUNT);
+            }
         }
         s_animation_next_frame_us = now + ANIMATION_FRAME_US;
         return;
@@ -388,7 +421,8 @@ static void update_animation_frame(int64_t now)
     // cadence used by DNA and particle rain. At the 90 ms animation tick this
     // produces one complete small-large-small beat in about 1.06 seconds.
     const float phase_step = s_animation_current == 4 ? 0.085f :
-                             (continuous ? 0.020f : 0.028f);
+                             (s_animation_current == 8 ? 0.007f :
+                             (continuous ? 0.020f : 0.028f));
     s_animation_phase += phase_step;
     if (s_animation_phase >= 1.0f) {
         if (continuous) {
@@ -402,8 +436,21 @@ static void update_animation_frame(int64_t now)
             return;
         }
     }
-    if (animation_library_bitmap(s_animation_current, s_animation_phase,
-                                 bitmap)) {
+    const bool ready = s_animation_current == 8 ?
+        animation_library_bitmap_owned(s_animation_current,
+                                       s_animation_phase,
+                                       bitmap, s_animation_owner_map) :
+        animation_library_bitmap(s_animation_current, s_animation_phase,
+                                 bitmap);
+    if (ready) {
+        if (s_animation_current == 8) {
+            sim_update_owned_animation_bitmap(bitmap,
+                                              s_animation_owner_map,
+                                              HANDWRITING_W,
+                                              HANDWRITING_H, 255);
+            s_animation_next_frame_us = now + ANIMATION_FRAME_US;
+            return;
+        }
         float motion_x = 0.0f;
         float motion_y = 0.0f;
         animation_library_screen_offset(s_animation_current,
@@ -799,6 +846,15 @@ static void close_wifi_editor(void)
     refresh_settings_screen();
 }
 
+static void set_about(bool open)
+{
+    s_about_open = open;
+    s_settings_touch_down = false;
+    s_settings_touch_target = 0;
+    render_set_about(open, s_settings.language);
+    ESP_LOGI(TAG, "about screen %s", open ? "open" : "closed");
+}
+
 static void wifi_editor_scan_task(void *arg)
 {
     (void)arg;
@@ -872,6 +928,8 @@ static void set_settings_open(bool open)
         close_wifi_editor();
         s_operation_guide_open = false;
         render_set_operation_guide(false, s_settings.language, 0);
+        s_about_open = false;
+        render_set_about(false, s_settings.language);
     }
     if (open) {
         s_weather_open = false;
@@ -930,7 +988,8 @@ static void handle_settings_tap(uint16_t x, uint16_t y)
             ESP_LOGI(TAG, "settings exit: returned to particle scene");
         } else if (x >= 238) {
             settings_click_feedback();
-            set_operation_guide(true, 0);
+            if (s_settings_page == 1) set_about(true);
+            else set_operation_guide(true, 0);
         }
         return;
     }
@@ -1243,6 +1302,21 @@ static void handle_operation_guide_tap(uint16_t x, uint16_t y)
     }
 }
 
+static void handle_about_tap(uint16_t x, uint16_t y)
+{
+    if (y < 370 || y > 440) return;
+    if (x <= 228) {
+        settings_click_feedback();
+        set_settings_open(false);
+        ESP_LOGI(TAG, "about: returned to particle scene");
+    } else if (x >= 238) {
+        settings_click_feedback();
+        set_about(false);
+        refresh_settings_screen();
+        ESP_LOGI(TAG, "about: returned to settings");
+    }
+}
+
 static uint8_t panel_brightness(uint8_t percent)
 {
     // Keep the minimum visible so a user can always recover the slider.
@@ -1263,6 +1337,7 @@ static void poll_settings_input(void)
             s_settings_touch_last_x = x;
             s_settings_touch_last_y = y;
             if (s_operation_guide_open) s_settings_touch_target = 2;
+            else if (s_about_open) s_settings_touch_target = 3;
             else if (y >= 78 && y <= 443) s_settings_touch_target = 1;
             else s_settings_touch_target = 0;
         } else {
@@ -1293,6 +1368,8 @@ static void poll_settings_input(void)
         } else if (target == 2) {
             handle_operation_guide_tap(s_settings_touch_x,
                                        s_settings_touch_y);
+        } else if (target == 3) {
+            handle_about_tap(s_settings_touch_x, s_settings_touch_y);
         }
     }
 }
@@ -1300,7 +1377,8 @@ static void poll_settings_input(void)
 static void handle_button(button_event_t event)
 {
     if (s_settings_open) {
-        if (!s_operation_guide_open && s_wifi_editor_mode == 0) {
+        if (!s_operation_guide_open && !s_about_open &&
+            s_wifi_editor_mode == 0) {
             if (event == BUTTON_EVENT_A_SHORT) {
                 s_settings_page = 0;
                 settings_click_feedback();
@@ -1313,6 +1391,7 @@ static void handle_button(button_event_t event)
         }
         if (event == BUTTON_EVENT_AB_LONG) {
             if (s_operation_guide_open) set_operation_guide(false, 0);
+            else if (s_about_open) set_about(false);
             else set_settings_open(false);
         }
         return;
@@ -2082,14 +2161,71 @@ static void sim_task(void *arg)
             if (s_audio_ready) {
                 audio_set_motion(stats.mean_speed, stats.max_speed,
                                  stats.front_hits + stats.back_hits,
-                                 stats.clamped);
+                stats.clamped);
                 if (s_settings.reactive) {
                     float bass = 0.0f;
-                    audio_get_levels(&bass, NULL, NULL);
-                    if (bass > 0.68f && s_last_bass <= 0.68f) {
-                        sim_audio_pulse(bass);
+                    float mid = 0.0f;
+                    float treble = 0.0f;
+                    audio_get_levels(&bass, &mid, &treble);
+                    // Percussion and vocals are not always bass-heavy. Use
+                    // whichever is stronger: bass, or a restrained share of
+                    // the mid band that already drives the colour response.
+                    const float beat = fmaxf(bass, mid * 0.74f);
+                    const float rise = beat - s_last_bass;
+                    const int64_t since_pulse = now - s_last_music_pulse_us;
+                    // A 0.68 crossing only caught unusually strong isolated
+                    // peaks. Normal music now triggers on a clear rise, with
+                    // a cooldown for sustained bass so it cannot fire on every
+                    // simulation pass.
+                    const bool onset = beat > 0.14f && rise > 0.015f;
+                    const bool sustained_beat = beat > 0.26f &&
+                                                since_pulse >= 280000;
+                    bool low_fired = false;
+                    if (!sim_formation_active() && since_pulse >= 120000 &&
+                        (onset || sustained_beat)) {
+                        const float pulse = fminf(1.0f,
+                                                  (beat - 0.08f) / 0.92f);
+                        sim_audio_wave(pulse, s_music_wave_reverse);
+                        sim_audio_pulse(pulse);
+                        s_music_wave_reverse = !s_music_wave_reverse;
+                        s_last_music_pulse_us = now;
+                        low_fired = true;
                     }
-                    s_last_bass = bass;
+
+                    const float mid_rise = mid - s_last_music_mid;
+                    const bool mid_onset = mid > 0.16f && mid_rise > 0.020f;
+                    bool mid_fired = false;
+                    if (!low_fired && !sim_formation_active() && mid_onset &&
+                        now - s_last_music_side_us >= 180000) {
+                        const float pulse = fminf(1.0f,
+                                                  (mid - 0.10f) / 0.90f);
+                        sim_audio_side_pulse(pulse, s_music_right_side);
+                        s_music_right_side = !s_music_right_side;
+                        s_last_music_side_us = now;
+                        mid_fired = true;
+                    }
+
+                    const float treble_rise = treble - s_last_music_treble;
+                    const bool treble_onset = treble > 0.18f &&
+                                              treble_rise > 0.028f;
+                    if (!low_fired && !mid_fired &&
+                        !sim_formation_active() && treble_onset &&
+                        now - s_last_music_spark_us >= 110000) {
+                        const float pulse = fminf(1.0f,
+                                                  (treble - 0.12f) / 0.88f);
+                        sim_audio_sparks(pulse);
+                        s_last_music_spark_us = now;
+                    }
+                    s_last_bass = beat;
+                    s_last_music_mid = mid;
+                    s_last_music_treble = treble;
+                } else {
+                    s_last_bass = 0.0f;
+                    s_last_music_mid = 0.0f;
+                    s_last_music_treble = 0.0f;
+                    s_last_music_pulse_us = 0;
+                    s_last_music_side_us = 0;
+                    s_last_music_spark_us = 0;
                 }
             }
         }

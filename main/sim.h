@@ -105,6 +105,12 @@ void sim_update_animation_bitmap(const uint8_t *bitmap, int width, int height,
                                  bool preserve_stream_ownership,
                                  uint16_t fixed_particle_count,
                                  float motion_x, float motion_y);
+void sim_show_owned_animation_bitmap(const uint8_t *bitmap,
+                                     const uint8_t *owners,
+                                     int width, int height, uint8_t color);
+void sim_update_owned_animation_bitmap(const uint8_t *bitmap,
+                                       const uint8_t *owners,
+                                       int width, int height, uint8_t color);
 void sim_end_formation(void);
 void sim_release_formation(void);
 bool sim_formation_active(void);
@@ -113,8 +119,11 @@ bool sim_formation_active(void);
 void sim_center_burst(void);
 void sim_directional_gust(float x, float y);
 
-// Gives the whole pool a brief upward kick on a detected external bass beat.
+// Music-reactive gestures use real particles from the current liquid surface.
 void sim_audio_pulse(float strength);
+void sim_audio_wave(float strength, bool reverse);
+void sim_audio_side_pulse(float strength, bool right_side);
+void sim_audio_sparks(float strength);
 
 // Advances the fluid by dt_real seconds of wall-clock time.
 void sim_step(float dt_real, const sim_forces_t *forces);

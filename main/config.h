@@ -1,5 +1,8 @@
 #pragma once
 
+#define CHRONOTRACE_VERSION "1.0.0"
+#define CHRONOTRACE_COPYRIGHT_YEAR "2026"
+
 // Every ChronoTrace tunable lives here. Anything you might want to change to
 // alter the look or the performance/quality tradeoff is a constant below.
 

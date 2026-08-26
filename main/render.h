@@ -48,6 +48,8 @@ void render_set_wifi_editor(uint8_t mode, uint8_t language,
 // Full-screen, bilingual operation guide reached from the settings page.
 // Page 0 documents the physical buttons; page 1 documents touch gestures.
 void render_set_operation_guide(bool visible, uint8_t language, uint8_t page);
+// Full-screen product information reached from the device settings page.
+void render_set_about(bool visible, uint8_t language);
 
 // Full-screen shape library. selection_rank stores 0 for unselected items and
 // 1..N for the user's playback order across 40 built-ins plus custom drawings.
