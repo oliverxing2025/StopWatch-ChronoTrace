@@ -135,15 +135,33 @@ esp_err_t settings_load_handwriting(uint8_t *count, uint8_t *data,
 esp_err_t settings_save_handwriting(uint8_t count, const uint8_t *data,
                                     size_t glyph_bytes, const uint8_t *colors)
 {
-    if (!s_ready || count == 0 || !data || !colors || glyph_bytes == 0) {
+    if (!s_ready || glyph_bytes == 0 ||
+        (count > 0 && (!data || !colors))) {
         return ESP_ERR_INVALID_ARG;
     }
     nvs_handle_t handle;
     esp_err_t err = nvs_open("fluidbox", NVS_READWRITE, &handle);
-    if (err == ESP_OK) err = nvs_set_blob(handle, "hw_glyphs", data,
-                                          (size_t)count * glyph_bytes);
-    if (err == ESP_OK) err = nvs_set_u8(handle, "hw_count", count);
-    if (err == ESP_OK) err = nvs_set_blob(handle, "hw_colors", colors, count);
+    if (err != ESP_OK) return err;
+    if (count > 0) {
+        err = nvs_set_blob(handle, "hw_glyphs", data,
+                           (size_t)count * glyph_bytes);
+        if (err == ESP_OK) err = nvs_set_u8(handle, "hw_count", count);
+        if (err == ESP_OK) err = nvs_set_blob(handle, "hw_colors", colors, count);
+    } else {
+        err = nvs_set_u8(handle, "hw_count", 0);
+        if (err == ESP_OK) {
+            const esp_err_t glyph_err = nvs_erase_key(handle, "hw_glyphs");
+            if (glyph_err != ESP_OK && glyph_err != ESP_ERR_NVS_NOT_FOUND) {
+                err = glyph_err;
+            }
+        }
+        if (err == ESP_OK) {
+            const esp_err_t color_err = nvs_erase_key(handle, "hw_colors");
+            if (color_err != ESP_OK && color_err != ESP_ERR_NVS_NOT_FOUND) {
+                err = color_err;
+            }
+        }
+    }
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     return err;

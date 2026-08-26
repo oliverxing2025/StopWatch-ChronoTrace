@@ -25,3 +25,25 @@ The generator rescans the source, validates every required codepoint against
 the font cmap, and rewrites the generated C resource plus
 `tools/ui_font_charset.txt`. The complete OTF remains a build-time input and is
 not linked into the firmware.
+
+The boot wordmark uses Adobe Source Han Serif CN SemiBold. Only the exact
+Chinese and English product names are embedded in dedicated 30px and 24px
+brand subsets; the complete font remains outside the firmware tree. Its source
+is the official Adobe `source-han-serif` release branch and its license is
+retained at `LICENSE.SourceHanSerif`.
+
+```sh
+python3 tools/generate_ui_font.py \
+  --font /path/to/SourceHanSerifCN-SemiBold.otf \
+  --size 30 --characters 时迹 \
+  --family "Source Han Serif CN SemiBold" \
+  --output-name ui_font_source_han_serif_brand_30 \
+  --symbol-name g_source_han_serif_cn_brand_30
+
+python3 tools/generate_ui_font.py \
+  --font /path/to/SourceHanSerifCN-SemiBold.otf \
+  --size 24 --characters ChronoTrace \
+  --family "Source Han Serif CN SemiBold" \
+  --output-name ui_font_source_han_serif_brand_24 \
+  --symbol-name g_source_han_serif_cn_brand_24
+```

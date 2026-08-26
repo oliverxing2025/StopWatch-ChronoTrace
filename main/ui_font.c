@@ -2,10 +2,10 @@
 
 #include "ui_font_source_han_20.h"
 #include "ui_font_source_han_24.h"
-#include "ui_font_source_han_32.h"
-#include "ui_font_source_han_40.h"
 #include "ui_font_source_han_48.h"
 #include "ui_font_source_han_64.h"
+#include "ui_font_source_han_serif_brand_24.h"
+#include "ui_font_source_han_serif_brand_30.h"
 
 const ui_font_t *ui_font_message(void)
 {
@@ -29,7 +29,7 @@ const ui_font_t *ui_font_number_large(void)
 
 const ui_font_t *ui_font_brand_title(void)
 {
-    return &g_source_han_sans_cn_40;
+    return &g_source_han_serif_cn_brand_30;
 }
 
 const ui_font_t *ui_font_brand_subtitle(void)
@@ -39,7 +39,7 @@ const ui_font_t *ui_font_brand_subtitle(void)
 
 const ui_font_t *ui_font_brand_english(void)
 {
-    return &g_source_han_sans_cn_32;
+    return &g_source_han_serif_cn_brand_24;
 }
 
 static const ui_glyph_t *find_exact(const ui_font_t *font, uint32_t codepoint)

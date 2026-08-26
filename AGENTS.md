@@ -18,6 +18,7 @@
 
 ## Firmware flashing workflow
 
+- For this ChronoTrace project, a user request to change or refine firmware code or UI also authorizes the normal application-only flash after the change compiles and its required checks pass. Do not wait for a separate `烧录` message. Read-only diagnosis, review, explanation, or planning does not authorize a flash.
 - Treat this project as a continuation of the established ChronoTrace device workflow. Flash only after the requested source change has compiled and its relevant checks have passed.
 - Before writing, confirm `/dev/cu.usbmodem2101` is the expected ESP32-S3 with 16 MB flash, read the live partition table, and confirm the factory application still begins at `0x10000`.
 - Back up the live NVS range at `0x9000` with size `0x5000` before a write whenever the current task does not already have a verified backup. Never erase or overwrite NVS for an application-only update.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert the transparent Image2 timer icon into a compact RGBA asset."""
+"""Convert the selected hourglass artwork into a compact RGBA asset."""
 
 from pathlib import Path
 
@@ -7,11 +7,11 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "main/assets/countdown-timer-liquid-glass-image2.png"
+SOURCE = ROOT / "main/assets/countdown-hourglass-user.png"
 HEADER = ROOT / "main/countdown_timer_icon.h"
-WIDTH = 38
-HEIGHT = 38
-CONTENT_SIZE = 34
+WIDTH = 46
+HEIGHT = 46
+CONTENT_SIZE = 42
 
 
 def main() -> None:
@@ -35,7 +35,7 @@ def main() -> None:
         f"#define COUNTDOWN_TIMER_ICON_W {WIDTH}",
         f"#define COUNTDOWN_TIMER_ICON_H {HEIGHT}",
         "",
-        "// Image2 liquid-glass countdown icon with per-pixel alpha.",
+        "// User-selected liquid-glass hourglass with per-pixel alpha.",
         "static const uint8_t countdown_timer_icon_rgba[] = {",
     ]
     for row in range(HEIGHT):

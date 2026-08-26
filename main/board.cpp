@@ -89,6 +89,11 @@ extern "C" esp_err_t board_power_init(i2c_bus_handle_t i2c_bus)
         return ESP_ERR_NOT_FOUND;
     }
 
+    // Assert reset before energising the panel rail. The expander can retain
+    // its previous output state across a CPU reset; powering the AMOLED first
+    // can therefore expose stale panel contents for a few milliseconds.
+    ESP_RETURN_ON_ERROR(set_output(kDisplayResetPin, 0), TAG,
+                        "display reset assert failed");
     ESP_RETURN_ON_ERROR(set_output(kDisplayRailPin, 1), TAG,
                         "display power rail enable failed");
     ESP_RETURN_ON_ERROR(set_output(kAudioEnablePin, 1), TAG,
@@ -114,8 +119,6 @@ extern "C" esp_err_t board_power_init(i2c_bus_handle_t i2c_bus)
     }
     gpio_set_direction(kSpeakerPaGpio, GPIO_MODE_OUTPUT);
     gpio_set_level(kSpeakerPaGpio, 0);
-    ESP_RETURN_ON_ERROR(set_output(kDisplayResetPin, 0), TAG,
-                        "display reset assert failed");
     vTaskDelay(pdMS_TO_TICKS(10));
     ESP_RETURN_ON_ERROR(set_output(kDisplayResetPin, 1), TAG,
                         "display reset release failed");

@@ -486,8 +486,12 @@ esp_err_t wifi_setup_scan(char (*ssids)[33], size_t capacity, size_t *count)
     uint16_t found = 0;
     if (err == ESP_OK) err = esp_wifi_scan_get_ap_num(&found);
     if (found > 20) found = 20;
-    wifi_ap_record_t records[20] = {0};
-    if (err == ESP_OK && found > 0) err = esp_wifi_scan_get_ap_records(&found, records);
+    wifi_ap_record_t *records = NULL;
+    if (err == ESP_OK && found > 0) {
+        records = calloc(found, sizeof(*records));
+        if (records == NULL) err = ESP_ERR_NO_MEM;
+        else err = esp_wifi_scan_get_ap_records(&found, records);
+    }
     if (err == ESP_OK) {
         for (uint16_t i = 0; i < found && *count < capacity; i++) {
             if (records[i].ssid[0] == '\0') continue;
@@ -504,6 +508,7 @@ esp_err_t wifi_setup_scan(char (*ssids)[33], size_t capacity, size_t *count)
             }
         }
     }
+    free(records);
     s_scanning = false;
     if (!was_enabled) {
         // The scan may have started the station driver. Leave its buffers in

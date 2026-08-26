@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include <string.h>
 
 #define LCD_HOST SPI2_HOST
 #define LCD_PCLK GPIO_NUM_40
@@ -39,6 +40,9 @@ static const co5300_lcd_init_cmd_t s_init_cmds[] = {
     {0x35, (uint8_t[]){0x80}, 1, 0},
     {0x44, (uint8_t[]){0x01, 0xD2}, 2, 0},
     {0x53, (uint8_t[]){0x20}, 1, 0},
+    // Initialize the AMOLED at a known-visible level. Some CO5300 panels do
+    // not reliably leave brightness zero when a later standalone 0x51 command
+    // is sent, which can otherwise leave an otherwise healthy device black.
     {0x51, (uint8_t[]){0xA0}, 1, 0},
     {0x63, (uint8_t[]){0xFF}, 1, 0},
     {0x2A, (uint8_t[]){0x00, 0x00, 0x01, 0xDF}, 4, 0},
@@ -105,7 +109,18 @@ esp_err_t display_init(void)
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel, true), TAG,
                         "panel on failed");
 
-    ESP_LOGI(TAG, "CO5300 ready: %dx%d, QSPI 80MHz, x-gap %d",
+    // Prime the complete panel with known black pixels while brightness is
+    // still zero. main.c raises brightness only after this function returns;
+    // display_set_brightness() waits for both DMA tokens, so all black bands
+    // are guaranteed to reach the panel before they become visible.
+    for (int band = 0; band < BAND_COUNT; band++) {
+        uint16_t *buffer = display_acquire_band();
+        memset(buffer, 0, BAND_PIXELS * sizeof(uint16_t));
+        ESP_RETURN_ON_ERROR(display_flush_band(band, buffer), TAG,
+                            "initial black clear failed");
+    }
+
+    ESP_LOGI(TAG, "CO5300 ready: %dx%d, QSPI 80MHz, x-gap %d, black primed",
              LCD_H_RES, LCD_V_RES, LCD_PANEL_X_GAP);
     return ESP_OK;
 }

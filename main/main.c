@@ -4,6 +4,7 @@
 
 #include "board.h"
 #include "audio.h"
+#include "animation_library.h"
 #include "battery.h"
 #include "ble_setup.h"
 #include "button.h"
@@ -20,6 +21,7 @@
 #include "render.h"
 #include "rtc_clock.h"
 #include "settings.h"
+#include "shape_library.h"
 #include "sim.h"
 #include "touch.h"
 #include "wifi_setup.h"
@@ -85,6 +87,12 @@ static char s_wifi_password[65];
 static bool s_wifi_uppercase;
 static bool s_wifi_symbols;
 static bool s_wifi_reveal;
+static TaskHandle_t s_wifi_scan_task;
+static portMUX_TYPE s_wifi_scan_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_wifi_scan_done;
+static esp_err_t s_wifi_scan_result;
+static char s_wifi_scan_ssids[6][33];
+static size_t s_wifi_scan_count;
 static wifi_setup_state_t s_settings_wifi_state_seen = WIFI_SETUP_UNCONFIGURED;
 static bool s_ble_time_calibrated;
 static bool s_ble_time_calibrating;
@@ -94,8 +102,35 @@ static bool s_weather_open;
 static bool s_weather_transition_pending;
 static int64_t s_weather_transition_deadline_us;
 static weather_state_t s_weather_state_seen = WEATHER_STATE_IDLE;
+static bool s_shape_mode;
+static bool s_shape_picker_open;
+static bool s_shape_picker_animation;
+static bool s_shape_editor_return;
+static uint8_t s_shape_picker_page;
+static uint8_t s_shape_playlist[SHAPE_LIBRARY_COUNT + HANDWRITING_MAX_GLYPHS];
+static uint8_t s_shape_rank[SHAPE_LIBRARY_COUNT + HANDWRITING_MAX_GLYPHS];
+static uint8_t s_shape_playlist_count;
+static uint8_t s_shape_playlist_index;
+static uint8_t s_shape_current;
+static uint8_t s_shape_pending;
+static bool s_shape_transition_pending;
+static int64_t s_shape_transition_deadline_us;
+static int64_t s_shape_next_us;
+static bool s_shape_pending_animation;
+static bool s_animation_active;
+static bool s_animation_picker_selected;
+static uint8_t s_animation_current;
+static float s_animation_phase;
+static int64_t s_animation_next_frame_us;
+static bool s_animation_restart_pending;
+static int64_t s_animation_restart_us;
 
 #define HANDWRITING_GLYPH_US 2800000
+#define SHAPE_PLAY_US 3200000
+#define SHAPE_RELEASE_US 650000
+#define ANIMATION_FRAME_US 90000
+#define ANIMATION_RESTART_PAUSE_US 420000
+#define ANIMATION_PARTICLE_LOCK_PHASE 0.38f
 #define COUNTDOWN_MENU_US 120000000
 #define COUNTDOWN_CENTER_X (LCD_H_RES / 2)
 #define COUNTDOWN_CENTER_Y (LCD_V_RES / 2)
@@ -200,6 +235,361 @@ static void start_handwriting_playback(bool show_message)
                          handwriting_glyph_color(0));
     s_handwriting_next_us = esp_timer_get_time() + HANDWRITING_GLYPH_US;
     if (show_message) render_show_message(ui_text("笔迹播放", "Ink playback"));
+}
+
+static uint8_t shape_item_count(void)
+{
+    return SHAPE_LIBRARY_COUNT + handwriting_count();
+}
+
+static void sanitize_shape_selection(void)
+{
+    const uint8_t total = shape_item_count();
+    uint8_t kept = 0;
+    memset(s_shape_rank, 0, sizeof(s_shape_rank));
+    for (uint8_t i = 0; i < s_shape_playlist_count; i++) {
+        const uint8_t item = s_shape_playlist[i];
+        if (item >= total) continue;
+        s_shape_playlist[kept] = item;
+        s_shape_rank[item] = kept + 1;
+        kept++;
+    }
+    s_shape_playlist_count = kept;
+}
+
+static void refresh_shape_picker(void)
+{
+    render_set_shape_picker_category(s_shape_picker_animation,
+                                     s_animation_picker_selected,
+                                     s_animation_current);
+    if (s_shape_picker_animation) {
+        s_shape_picker_page = 0;
+        render_set_shape_picker(s_shape_picker_open, s_settings.language, 0,
+                                handwriting_count(), s_shape_rank,
+                                s_shape_playlist_count);
+        return;
+    }
+    const uint8_t total = shape_item_count();
+    const uint8_t pages = total ?
+        (uint8_t)((total + SHAPE_PICKER_PAGE_SIZE - 1) /
+                  SHAPE_PICKER_PAGE_SIZE) : 1;
+    if (s_shape_picker_page >= pages) s_shape_picker_page = pages - 1;
+    render_set_shape_picker(s_shape_picker_open, s_settings.language,
+                            s_shape_picker_page, handwriting_count(),
+                            s_shape_rank, s_shape_playlist_count);
+}
+
+static void show_shape_item(uint8_t item)
+{
+    const uint8_t total = shape_item_count();
+    if (total == 0) return;
+    if (item >= total) item = 0;
+    s_animation_active = false;
+    s_animation_next_frame_us = 0;
+    s_animation_restart_pending = false;
+    static uint8_t bitmap[HANDWRITING_BYTES];
+    if (item < SHAPE_LIBRARY_COUNT) {
+        if (!shape_library_bitmap(item, bitmap)) return;
+        sim_show_handwriting(bitmap, HANDWRITING_W, HANDWRITING_H,
+                             shape_library_color(item));
+    } else {
+        const uint8_t custom = item - SHAPE_LIBRARY_COUNT;
+        const uint8_t *glyph = handwriting_glyph(custom);
+        if (!glyph) return;
+        sim_show_handwriting(glyph, HANDWRITING_W, HANDWRITING_H,
+                             handwriting_glyph_color(custom));
+    }
+    s_shape_current = item;
+    s_shape_next_us = s_shape_playlist_count > 1 ?
+                      esp_timer_get_time() + SHAPE_PLAY_US : 0;
+    ESP_LOGI(TAG, "shape item %u/%u started", (unsigned)item + 1,
+             (unsigned)total);
+}
+
+static void queue_shape_item(uint8_t item)
+{
+    s_shape_pending = item;
+    s_shape_pending_animation = false;
+    s_animation_active = false;
+    s_animation_next_frame_us = 0;
+    s_animation_restart_pending = false;
+    if (sim_formation_active()) {
+        sim_release_formation();
+        s_shape_transition_pending = true;
+        s_shape_transition_deadline_us = esp_timer_get_time() + SHAPE_RELEASE_US;
+    } else {
+        s_shape_transition_pending = false;
+        show_shape_item(item);
+    }
+}
+
+static void show_animation_item(uint8_t item)
+{
+    if (item >= ANIMATION_LIBRARY_COUNT) item = 0;
+    static uint8_t bitmap[HANDWRITING_BYTES];
+    s_animation_phase = 0.0f;
+    s_animation_restart_pending = false;
+    s_animation_current = item;
+    if (!animation_library_bitmap(item, s_animation_phase, bitmap)) return;
+    const uint16_t fixed_particles = item == 6 ? 60 : 0;
+    sim_show_animation_bitmap(bitmap, HANDWRITING_W, HANDWRITING_H,
+                              255, fixed_particles,
+                              item >= ANIMATION_ARROW_COUNT);
+    s_animation_active = true;
+    s_animation_picker_selected = true;
+    s_animation_next_frame_us = esp_timer_get_time() + ANIMATION_FRAME_US;
+    s_shape_next_us = 0;
+    ESP_LOGI(TAG, "animation item %u/%u started", (unsigned)item + 1,
+             (unsigned)ANIMATION_LIBRARY_COUNT);
+}
+
+static void queue_animation_item(uint8_t item)
+{
+    s_shape_pending = item;
+    s_shape_pending_animation = true;
+    s_animation_active = false;
+    s_animation_next_frame_us = 0;
+    s_animation_restart_pending = false;
+    if (sim_formation_active()) {
+        sim_release_formation();
+        s_shape_transition_pending = true;
+        s_shape_transition_deadline_us = esp_timer_get_time() + SHAPE_RELEASE_US;
+    } else {
+        s_shape_transition_pending = false;
+        show_animation_item(item);
+    }
+}
+
+static void update_animation_frame(int64_t now)
+{
+    if (!s_animation_active || s_shape_picker_open ||
+        now < s_animation_next_frame_us) return;
+    static uint8_t bitmap[HANDWRITING_BYTES];
+    if (s_animation_restart_pending) {
+        if (now < s_animation_restart_us) return;
+        s_animation_restart_pending = false;
+        s_animation_phase = 0.0f;
+        if (animation_library_bitmap(s_animation_current, s_animation_phase,
+                                     bitmap)) {
+            const uint16_t fixed_particles =
+                s_animation_current == 6 ? 60 : 0;
+            sim_show_animation_bitmap(bitmap, HANDWRITING_W, HANDWRITING_H,
+                                      255, fixed_particles,
+                                      s_animation_current >=
+                                          ANIMATION_ARROW_COUNT);
+        }
+        s_animation_next_frame_us = now + ANIMATION_FRAME_US;
+        return;
+    }
+    const bool continuous =
+        animation_library_is_continuous(s_animation_current);
+    const bool moving_arrow = s_animation_current < ANIMATION_ARROW_COUNT;
+    // Heartbeat needs a recognisable pulse rather than the slower ambient
+    // cadence used by DNA and particle rain. At the 90 ms animation tick this
+    // produces one complete small-large-small beat in about 1.06 seconds.
+    const float phase_step = s_animation_current == 4 ? 0.085f :
+                             (continuous ? 0.020f : 0.028f);
+    s_animation_phase += phase_step;
+    if (s_animation_phase >= 1.0f) {
+        if (continuous) {
+            s_animation_phase -= 1.0f;
+        } else {
+            sim_release_formation();
+            s_animation_phase = 0.0f;
+            s_animation_restart_pending = true;
+            s_animation_restart_us = now + ANIMATION_RESTART_PAUSE_US;
+            s_animation_next_frame_us = s_animation_restart_us;
+            return;
+        }
+    }
+    if (animation_library_bitmap(s_animation_current, s_animation_phase,
+                                 bitmap)) {
+        float motion_x = 0.0f;
+        float motion_y = 0.0f;
+        animation_library_screen_offset(s_animation_current,
+                                        s_animation_phase,
+                                        &motion_x, &motion_y);
+        sim_update_animation_bitmap(bitmap, HANDWRITING_W, HANDWRITING_H,
+                                    255,
+                                    moving_arrow && s_animation_phase <
+                                                    ANIMATION_PARTICLE_LOCK_PHASE,
+                                    !moving_arrow,
+                                    s_animation_current == 7,
+                                    s_animation_current == 6 ? 60 : 0,
+                                    motion_x, motion_y);
+    }
+    s_animation_next_frame_us = now + ANIMATION_FRAME_US;
+}
+
+static void enter_shape_mode(void)
+{
+    s_clock_held = false;
+    s_handwriting_playing = false;
+    s_handwriting_restore_ready = false;
+    s_random_shape_transition_pending = false;
+    s_shape_mode = true;
+    s_shape_picker_open = false;
+    s_shape_picker_animation = false;
+    s_animation_active = false;
+    s_animation_restart_pending = false;
+    render_set_shape_picker(false, s_settings.language, 0,
+                            handwriting_count(), s_shape_rank,
+                            s_shape_playlist_count);
+    queue_shape_item(0);
+    ESP_LOGI(TAG, "shape library entered");
+}
+
+static void leave_shape_mode(void)
+{
+    s_shape_mode = false;
+    s_shape_picker_open = false;
+    s_shape_transition_pending = false;
+    s_shape_next_us = 0;
+    s_animation_active = false;
+    s_animation_next_frame_us = 0;
+    s_animation_restart_pending = false;
+    render_set_shape_picker(false, s_settings.language, 0,
+                            handwriting_count(), s_shape_rank,
+                            s_shape_playlist_count);
+    sim_release_formation();
+    ESP_LOGI(TAG, "shape library returned to fluid scene");
+}
+
+static void open_shape_picker(void)
+{
+    s_shape_picker_open = true;
+    s_shape_picker_animation = s_animation_active;
+    s_shape_picker_page = s_shape_picker_animation ? 0 :
+                          s_shape_current / SHAPE_PICKER_PAGE_SIZE;
+    s_animation_picker_selected = s_animation_active;
+    s_shape_next_us = 0;
+    refresh_shape_picker();
+    ESP_LOGI(TAG, "shape picker opened");
+}
+
+static void close_shape_picker(void)
+{
+    s_shape_picker_open = false;
+    render_set_shape_picker(false, s_settings.language, 0,
+                            handwriting_count(), s_shape_rank,
+                            s_shape_playlist_count);
+    s_shape_next_us = s_shape_playlist_count > 1 ?
+                      esp_timer_get_time() + SHAPE_PLAY_US : 0;
+    touch_cancel_gestures();
+    ESP_LOGI(TAG, "shape picker exited");
+}
+
+static void toggle_shape_selection(uint8_t item)
+{
+    if (item >= shape_item_count()) return;
+    const uint8_t rank = s_shape_rank[item];
+    if (rank) {
+        const uint8_t remove_index = rank - 1;
+        for (uint8_t i = remove_index; i + 1 < s_shape_playlist_count; i++) {
+            s_shape_playlist[i] = s_shape_playlist[i + 1];
+            s_shape_rank[s_shape_playlist[i]] = i + 1;
+        }
+        s_shape_playlist_count--;
+        s_shape_rank[item] = 0;
+    } else if (s_shape_playlist_count < sizeof(s_shape_playlist)) {
+        s_shape_playlist[s_shape_playlist_count] = item;
+        s_shape_playlist_count++;
+        s_shape_rank[item] = s_shape_playlist_count;
+    }
+    refresh_shape_picker();
+}
+
+static uint8_t remap_shape_after_custom_delete(uint8_t item, uint16_t mask,
+                                                bool *removed)
+{
+    if (removed) *removed = false;
+    if (item < SHAPE_LIBRARY_COUNT) return item;
+    const uint8_t custom = item - SHAPE_LIBRARY_COUNT;
+    if (custom >= HANDWRITING_MAX_GLYPHS ||
+        (mask & (uint16_t)(1U << custom))) {
+        if (removed) *removed = true;
+        return 0;
+    }
+    uint8_t shift = 0;
+    for (uint8_t i = 0; i < custom; i++) {
+        if (mask & (uint16_t)(1U << i)) shift++;
+    }
+    return SHAPE_LIBRARY_COUNT + custom - shift;
+}
+
+static void delete_selected_custom_shapes(void)
+{
+    const uint8_t custom_count = handwriting_count();
+    uint16_t mask = 0;
+    for (uint8_t custom = 0; custom < custom_count; custom++) {
+        if (s_shape_rank[SHAPE_LIBRARY_COUNT + custom]) {
+            mask |= (uint16_t)(1U << custom);
+        }
+    }
+    if (!mask) return;
+
+    uint8_t kept = 0;
+    uint8_t remapped[SHAPE_LIBRARY_COUNT + HANDWRITING_MAX_GLYPHS];
+    for (uint8_t i = 0; i < s_shape_playlist_count; i++) {
+        bool removed = false;
+        const uint8_t item = remap_shape_after_custom_delete(s_shape_playlist[i],
+                                                              mask, &removed);
+        if (!removed) remapped[kept++] = item;
+    }
+    memcpy(s_shape_playlist, remapped, kept);
+    s_shape_playlist_count = kept;
+    s_shape_playlist_index = 0;
+    memset(s_shape_rank, 0, sizeof(s_shape_rank));
+    for (uint8_t i = 0; i < kept; i++) s_shape_rank[s_shape_playlist[i]] = i + 1;
+
+    s_shape_current = remap_shape_after_custom_delete(s_shape_current, mask, NULL);
+    s_shape_pending = remap_shape_after_custom_delete(s_shape_pending, mask, NULL);
+    const uint8_t deleted = handwriting_delete_mask(mask);
+    refresh_shape_picker();
+    if (s_audio_ready) audio_trigger(AUDIO_EVENT_TOUCH);
+    ESP_LOGI(TAG, "shape picker deleted %u selected custom shapes",
+             (unsigned)deleted);
+}
+
+static void play_shape_selection(void)
+{
+    if (s_shape_playlist_count == 0) {
+        s_shape_playlist[0] = s_shape_current < shape_item_count() ?
+                              s_shape_current : 0;
+        s_shape_playlist_count = 1;
+        s_shape_rank[s_shape_playlist[0]] = 1;
+    }
+    s_shape_picker_open = false;
+    render_set_shape_picker(false, s_settings.language, 0,
+                            handwriting_count(), s_shape_rank,
+                            s_shape_playlist_count);
+    s_shape_playlist_index = 0;
+    queue_shape_item(s_shape_playlist[0]);
+    ESP_LOGI(TAG, "shape playlist started with %u items",
+             (unsigned)s_shape_playlist_count);
+}
+
+static void play_animation_selection(void)
+{
+    s_animation_picker_selected = true;
+    s_shape_picker_open = false;
+    render_set_shape_picker(false, s_settings.language, 0,
+                            handwriting_count(), s_shape_rank,
+                            s_shape_playlist_count);
+    queue_animation_item(s_animation_current);
+    touch_cancel_gestures();
+    ESP_LOGI(TAG, "animation selection started");
+}
+
+static void random_shape_item(void)
+{
+    const uint8_t total = shape_item_count();
+    if (total == 0) return;
+    uint8_t next = (uint8_t)(rand() % total);
+    if (total > 1 && next == s_shape_current) next = (next + 1) % total;
+    s_shape_playlist_count = 0;
+    memset(s_shape_rank, 0, sizeof(s_shape_rank));
+    queue_shape_item(next);
 }
 
 static void set_countdown_menu(bool visible)
@@ -409,6 +799,53 @@ static void close_wifi_editor(void)
     refresh_settings_screen();
 }
 
+static void wifi_editor_scan_task(void *arg)
+{
+    (void)arg;
+    char ssids[6][33] = {{0}};
+    size_t count = 0;
+    const esp_err_t err = wifi_setup_scan(ssids, 6, &count);
+
+    portENTER_CRITICAL(&s_wifi_scan_lock);
+    memcpy(s_wifi_scan_ssids, ssids, sizeof(s_wifi_scan_ssids));
+    s_wifi_scan_count = count;
+    s_wifi_scan_result = err;
+    s_wifi_scan_done = true;
+    portEXIT_CRITICAL(&s_wifi_scan_lock);
+
+    s_wifi_scan_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void finish_wifi_editor_scan(void)
+{
+    char ssids[6][33];
+    size_t count = 0;
+    esp_err_t err = ESP_OK;
+    bool done = false;
+
+    portENTER_CRITICAL(&s_wifi_scan_lock);
+    if (s_wifi_scan_done) {
+        memcpy(ssids, s_wifi_scan_ssids, sizeof(ssids));
+        count = s_wifi_scan_count;
+        err = s_wifi_scan_result;
+        s_wifi_scan_done = false;
+        done = true;
+    }
+    portEXIT_CRITICAL(&s_wifi_scan_lock);
+    if (!done) return;
+
+    memcpy(s_wifi_ssids, ssids, sizeof(s_wifi_ssids));
+    s_wifi_ssid_count = count;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi scan failed: %s", esp_err_to_name(err));
+        if (s_wifi_editor_mode == 1) {
+            render_show_message(ui_text("Wi-Fi 扫描失败", "Wi-Fi scan failed"));
+        }
+    }
+    if (s_wifi_editor_mode == 1) refresh_wifi_editor();
+}
+
 static void scan_wifi_for_editor(void)
 {
     s_wifi_editor_mode = 1;
@@ -416,12 +853,16 @@ static void scan_wifi_for_editor(void)
     s_wifi_selected = 0;
     memset(s_wifi_ssids, 0, sizeof(s_wifi_ssids));
     refresh_wifi_editor();
-    const esp_err_t err = wifi_setup_scan(s_wifi_ssids, 6, &s_wifi_ssid_count);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi scan failed: %s", esp_err_to_name(err));
+    if (s_wifi_scan_task != NULL) return;
+
+    const BaseType_t created = xTaskCreatePinnedToCore(
+        wifi_editor_scan_task, "wifi_scan", 6144, NULL, 3,
+        &s_wifi_scan_task, 0);
+    if (created != pdPASS) {
+        s_wifi_scan_task = NULL;
+        ESP_LOGE(TAG, "Wi-Fi scan task allocation failed");
         render_show_message(ui_text("Wi-Fi 扫描失败", "Wi-Fi scan failed"));
     }
-    refresh_wifi_editor();
 }
 
 static void set_settings_open(bool open)
@@ -493,10 +934,10 @@ static void handle_settings_tap(uint16_t x, uint16_t y)
         }
         return;
     }
-    const int first_top = s_settings_page == 0 ? 78 : 86;
-    const int pitch = s_settings_page == 0 ? 58 : 72;
-    const int row_height = s_settings_page == 0 ? 48 : 56;
-    const int row_count = s_settings_page == 0 ? 4 : 3;
+    const int first_top = 78;
+    const int pitch = 58;
+    const int row_height = 48;
+    const int row_count = 4;
     if (y < first_top || y > first_top + (row_count - 1) * pitch + row_height) return;
     const int offset = (int)y - first_top;
     const int row = offset / pitch;
@@ -635,6 +1076,26 @@ static void handle_settings_tap(uint16_t x, uint16_t y)
             changed = true;
         }
         if (s_audio_ready && s_settings.volume > 0) {
+            audio_trigger(AUDIO_EVENT_UI_CLICK);
+        }
+    } else if (s_settings_page == 1 && row == 3) {
+        const int choice = settings_choice_from_x(x, 2);
+        if (choice < 0) return;
+        const bool enable = choice == 0;
+        if (s_settings.haptic_enabled) board_haptic_click();
+        if (s_settings.reactive != enable) {
+            s_settings.reactive = enable;
+            render_set_reactive(enable);
+            if (s_audio_ready) {
+                audio_set_reactive(enable);
+                if (s_settings.volume > 0) {
+                    audio_trigger(AUDIO_EVENT_REACTIVE);
+                }
+            }
+            changed = true;
+            ESP_LOGI(TAG, "device settings music reactive: %s",
+                     enable ? "on" : "off");
+        } else if (s_audio_ready && s_settings.volume > 0) {
             audio_trigger(AUDIO_EVENT_UI_CLICK);
         }
     }
@@ -865,6 +1326,15 @@ static void handle_button(button_event_t event)
         }
         return;
     }
+    if (s_shape_picker_open && event != BUTTON_EVENT_NONE) {
+        if (event == BUTTON_EVENT_A_SHORT || event == BUTTON_EVENT_B_SHORT) {
+            play_shape_selection();
+        } else if (event == BUTTON_EVENT_AB_LONG) {
+            leave_shape_mode();
+            set_settings_open(true);
+        }
+        return;
+    }
     if (handwriting_active() && event != BUTTON_EVENT_A_SHORT && event != BUTTON_EVENT_NONE) {
         return;
     }
@@ -874,8 +1344,15 @@ static void handle_button(button_event_t event)
             if (handwriting_active()) {
                 handwriting_cancel();
                 touch_cancel_gestures();
-                start_handwriting_playback(true);
-                render_show_message(ui_text("已取消手写", "Drawing canceled"));
+                if (s_shape_editor_return) {
+                    s_shape_editor_return = false;
+                    s_shape_picker_open = true;
+                    sanitize_shape_selection();
+                    refresh_shape_picker();
+                } else {
+                    start_handwriting_playback(true);
+                    render_show_message(ui_text("已取消手写", "Drawing canceled"));
+                }
                 ESP_LOGI(TAG, "button A: cancel handwriting");
             } else {
                 s_clock_held = false;
@@ -921,16 +1398,22 @@ static void handle_button(button_event_t event)
             if (s_countdown_active || s_countdown_menu) break;
             uint8_t percent = 0;
             uint16_t millivolts = 0;
+            bool charging = false;
             const esp_err_t err = s_battery_ready ?
                 battery_read(&percent, &millivolts) : ESP_ERR_INVALID_STATE;
             if (err == ESP_OK) {
+                const esp_err_t charge_err = battery_is_charging(&charging);
+                if (charge_err != ESP_OK) {
+                    ESP_LOGW(TAG, "charge status unavailable: %s",
+                             esp_err_to_name(charge_err));
+                }
                 s_clock_held = false;
                 s_handwriting_playing = false;
                 s_handwriting_restore_ready = false;
-                sim_show_battery(percent);
+                sim_show_battery(percent, charging);
                 if (s_audio_ready) audio_trigger(AUDIO_EVENT_TOUCH);
-                ESP_LOGI(TAG, "button B double: battery %u%% (%u mV)",
-                         (unsigned)percent, (unsigned)millivolts);
+                ESP_LOGI(TAG, "button B double: battery %u%% (%u mV), charging=%d",
+                         (unsigned)percent, (unsigned)millivolts, charging);
             } else {
                 render_show_message(ui_text("电量未就绪", "Battery unavailable"));
                 ESP_LOGW(TAG, "battery display unavailable: %s",
@@ -947,6 +1430,121 @@ static void handle_button(button_event_t event)
             break;
         default:
             break;
+    }
+}
+
+static void handle_shape_picker_touch(touch_event_t event, uint16_t x, uint16_t y)
+{
+    const uint8_t total = s_shape_picker_animation ? ANIMATION_LIBRARY_COUNT :
+                          shape_item_count();
+    const uint8_t pages = total ?
+        (uint8_t)((total + SHAPE_PICKER_PAGE_SIZE - 1) /
+                  SHAPE_PICKER_PAGE_SIZE) : 1;
+    if (event == TOUCH_EVENT_SWIPE_DOWN && !s_shape_picker_animation) {
+        s_shape_picker_animation = true;
+        s_shape_picker_page = 0;
+        s_animation_picker_selected = s_animation_active;
+        refresh_shape_picker();
+        ESP_LOGI(TAG, "picker swiped downward to animations");
+        return;
+    }
+    if (event == TOUCH_EVENT_SWIPE_UP && s_shape_picker_animation) {
+        s_shape_picker_animation = false;
+        s_shape_picker_page = s_shape_current / SHAPE_PICKER_PAGE_SIZE;
+        refresh_shape_picker();
+        ESP_LOGI(TAG, "picker swiped upward to shapes");
+        return;
+    }
+    if (event == TOUCH_EVENT_SWIPE_LEFT) {
+        if (s_shape_picker_animation) return;
+        if (s_shape_picker_page + 1 < pages) s_shape_picker_page++;
+        refresh_shape_picker();
+        return;
+    }
+    if (event == TOUCH_EVENT_SWIPE_RIGHT) {
+        if (s_shape_picker_animation) return;
+        if (s_shape_picker_page > 0) s_shape_picker_page--;
+        refresh_shape_picker();
+        return;
+    }
+    if (event == TOUCH_EVENT_LONG_PRESS) {
+        if (s_shape_picker_animation) play_animation_selection();
+        else play_shape_selection();
+        return;
+    }
+    if (event != TOUCH_EVENT_TAP) return;
+    if (y >= 338 && y <= 400) {
+        if (x < 233) {
+            if (s_shape_picker_animation) {
+                s_shape_picker_animation = false;
+                s_shape_picker_page = s_shape_current / SHAPE_PICKER_PAGE_SIZE;
+                refresh_shape_picker();
+                return;
+            }
+            s_shape_picker_open = false;
+            s_shape_editor_return = true;
+            render_set_shape_picker(false, s_settings.language, 0,
+                                    handwriting_count(), s_shape_rank,
+                                    s_shape_playlist_count);
+            sim_end_formation();
+            handwriting_enter();
+            touch_cancel_gestures();
+            ESP_LOGI(TAG, "shape picker opened custom drawing editor");
+        } else {
+            if (s_shape_picker_animation) play_animation_selection();
+            else play_shape_selection();
+        }
+        return;
+    }
+    if (y >= 407 && y <= 465) {
+        if (s_shape_picker_animation) {
+            close_shape_picker();
+            return;
+        }
+        bool exit_hit = x <= 230;
+        bool delete_hit = x >= 236;
+        if (exit_hit && x > 208) {
+            const int corner_dx = x - 208;
+            const int min_y = 431 - (int)sqrtf(
+                (float)(22 * 22 - corner_dx * corner_dx));
+            exit_hit = y >= min_y;
+        } else if (delete_hit && x < 258) {
+            const int corner_dx = 258 - x;
+            const int min_y = 431 - (int)sqrtf(
+                (float)(22 * 22 - corner_dx * corner_dx));
+            delete_hit = y >= min_y;
+        }
+        if (exit_hit) {
+            close_shape_picker();
+        } else if (delete_hit) {
+            delete_selected_custom_shapes();
+        }
+        return;
+    }
+    for (int cell = 0; cell < SHAPE_PICKER_PAGE_SIZE; cell++) {
+        const int column = cell & 1;
+        const int row = cell >> 1;
+        const int x0 = column ? 242 : 42;
+        const int x1 = column ? 424 : 224;
+        const int y0 = 65 + row * 44;
+        // Give the lowest shape row the otherwise-unused gap above the action
+        // buttons. This makes edge-of-screen taps reliable without allowing
+        // the hit target to overlap Draw/Play, which begins at y=338.
+        const int hit_y0 = row == 5 ? y0 - 4 : y0;
+        const int hit_y1 = row == 5 ? 337 : y0 + 40;
+        if (x >= x0 && x <= x1 && y >= hit_y0 && y <= hit_y1) {
+            const uint8_t item = s_shape_picker_page * SHAPE_PICKER_PAGE_SIZE + cell;
+            if (item < total) {
+                if (s_shape_picker_animation) {
+                    s_animation_current = item;
+                    s_animation_picker_selected = true;
+                    refresh_shape_picker();
+                } else {
+                    toggle_shape_selection(item);
+                }
+            }
+            return;
+        }
     }
 }
 
@@ -968,6 +1566,27 @@ static void handle_touch(touch_event_t event, uint16_t x, uint16_t y)
         } else if (event == TOUCH_EVENT_TAP) {
             close_weather_screen();
             ESP_LOGI(TAG, "weather particles released to fluid");
+        }
+        return;
+    }
+    if (s_shape_picker_open) {
+        handle_shape_picker_touch(event, x, y);
+        return;
+    }
+    if (s_shape_mode) {
+        if (event == TOUCH_EVENT_DOUBLE_TAP) {
+            if (s_animation_active) queue_animation_item(s_animation_current);
+            else random_shape_item();
+            if (s_audio_ready) audio_trigger(AUDIO_EVENT_TOUCH);
+        } else if (event == TOUCH_EVENT_LONG_PRESS) {
+            open_shape_picker();
+            if (s_audio_ready) audio_trigger(AUDIO_EVENT_TOUCH);
+        } else if (event == TOUCH_EVENT_SWIPE_LEFT) {
+            leave_shape_mode();
+        } else if (event == TOUCH_EVENT_SWIPE_UP) {
+            adjust_main_volume(1);
+        } else if (event == TOUCH_EVENT_SWIPE_DOWN) {
+            adjust_main_volume(-1);
         }
         return;
     }
@@ -1110,8 +1729,7 @@ static void handle_touch(touch_event_t event, uint16_t x, uint16_t y)
             ESP_LOGI(TAG, "weather page opened from cached snapshot");
             break;
         case TOUCH_EVENT_SWIPE_RIGHT:
-            sim_directional_gust(1.0f, 0.0f);
-            render_show_message(ui_text("粒子风：右", "Particle wind: Right"));
+            enter_shape_mode();
             break;
         case TOUCH_EVENT_SWIPE_UP:
             adjust_main_volume(1);
@@ -1232,6 +1850,7 @@ static void sim_task(void *arg)
 
         if (now - last_button_us >= BUTTON_PERIOD_MS * 1000) {
             last_button_us = now;
+            finish_wifi_editor_scan();
             handle_button(button_poll());
             const ble_setup_state_t ble_state = ble_setup_state();
             if (ble_state != s_settings_ble_state_seen) {
@@ -1307,6 +1926,29 @@ static void sim_task(void *arg)
                     ESP_LOGI(TAG, "random shape transition: new shape started");
                 }
             }
+            if (s_shape_transition_pending &&
+                now >= s_shape_transition_deadline_us) {
+                s_shape_transition_pending = false;
+                if (s_shape_mode && !s_shape_picker_open &&
+                    !handwriting_active()) {
+                    if (s_shape_pending_animation) {
+                        show_animation_item(s_shape_pending);
+                    } else {
+                        show_shape_item(s_shape_pending);
+                    }
+                }
+            }
+            if (s_shape_mode && !s_shape_picker_open &&
+                !s_shape_transition_pending && s_shape_playlist_count > 1 &&
+                s_shape_next_us != 0 && now >= s_shape_next_us) {
+                s_shape_playlist_index =
+                    (s_shape_playlist_index + 1) % s_shape_playlist_count;
+                queue_shape_item(s_shape_playlist[s_shape_playlist_index]);
+                ESP_LOGI(TAG, "shape playlist advanced to %u/%u",
+                         (unsigned)s_shape_playlist_index + 1,
+                         (unsigned)s_shape_playlist_count);
+            }
+            update_animation_frame(now);
             if (weather.state != s_weather_state_seen) {
                 s_weather_state_seen = weather.state;
                 render_set_network_busy(weather.state == WEATHER_STATE_UPDATING);
@@ -1323,8 +1965,33 @@ static void sim_task(void *arg)
                     if (result == HANDWRITING_RESULT_SAVED) {
                         touch_cancel_gestures();
                         if (s_audio_ready) audio_trigger(AUDIO_EVENT_TOUCH);
-                        start_handwriting_playback(true);
+                        if (s_shape_editor_return) {
+                            s_shape_editor_return = false;
+                            s_shape_picker_open = true;
+                            sanitize_shape_selection();
+                            refresh_shape_picker();
+                            render_show_message(ui_text("已保存到图形库",
+                                                        "Saved to library"));
+                        } else {
+                            start_handwriting_playback(true);
+                        }
                         ESP_LOGI(TAG, "handwriting editor finished");
+                    } else if (result == HANDWRITING_RESULT_CANCELED) {
+                        touch_cancel_gestures();
+                        if (s_audio_ready) audio_trigger(AUDIO_EVENT_TOUCH);
+                        if (s_shape_editor_return) {
+                            s_shape_editor_return = false;
+                            s_shape_picker_open = true;
+                            sanitize_shape_selection();
+                            refresh_shape_picker();
+                        } else {
+                            if (handwriting_count() > 0) {
+                                start_handwriting_playback(false);
+                            }
+                            render_show_message(ui_text("已取消手写",
+                                                        "Drawing canceled"));
+                        }
+                        ESP_LOGI(TAG, "handwriting editor returned without saving");
                     }
                 }
             } else if (s_countdown_menu) {
@@ -1560,13 +2227,13 @@ void app_main(void)
     settings_init(&s_settings);
     ESP_ERROR_CHECK(i2c_init());
     ESP_ERROR_CHECK(board_power_init(s_i2c_bus));
+    ESP_ERROR_CHECK(display_init());
+    ESP_ERROR_CHECK(display_set_brightness(panel_brightness(s_settings.brightness)));
     if (battery_init(s_i2c_bus) == ESP_OK) {
         s_battery_ready = true;
     } else {
         ESP_LOGW(TAG, "continuing without battery level input");
     }
-    ESP_ERROR_CHECK(display_init());
-    ESP_ERROR_CHECK(display_set_brightness(panel_brightness(s_settings.brightness)));
     ESP_ERROR_CHECK(button_init());
     if (touch_init(s_i2c_bus) != ESP_OK) {
         ESP_LOGW(TAG, "continuing without touch input");
@@ -1620,7 +2287,6 @@ void app_main(void)
         // Wi-Fi. The cached snapshot makes weather entry instant; periodic and
         // tap-requested refreshes remain available without surprising freezes.
     }
-    render_show_message(ui_text("操作已就绪", "Ready"));
     if (audio_init(s_i2c_bus, s_settings.theme, s_settings.volume,
                    s_settings.reactive) == ESP_OK) {
         s_audio_ready = true;

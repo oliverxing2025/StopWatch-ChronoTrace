@@ -76,9 +76,9 @@ bool sim_random_shape_active(void);
 void sim_show_countdown(uint8_t minutes, uint8_t seconds, float remaining_ratio);
 
 // Forms a hollow battery outline, fills its interior from left to right and
-// shows a centered 1..100 particle level above it. The shape releases after a
-// few seconds.
-void sim_show_battery(uint8_t percent);
+// shows a centered 1..100 particle level above it. While charging, a body-wide
+// bead rail below it repeatedly assembles, scatters and reforms.
+void sim_show_battery(uint8_t percent, bool charging);
 
 // Holds a minimal particle weather view: a WMO-derived icon above today's
 // low-to-high range. When valid is false, only a neutral cloud is formed.
@@ -88,6 +88,23 @@ void sim_show_weather(int16_t minimum_c, int16_t maximum_c,
 // Holds a 64x64 one-bit handwritten glyph. The actual stroke shape is used,
 // so Chinese, Latin letters, numbers, and simple symbols need no OCR/font.
 void sim_show_handwriting(const uint8_t *bitmap, int width, int height, uint8_t color);
+// Updates the targets of an already visible glyph without announcing a new
+// formation. Used by smooth particle animations whose topology evolves frame
+// by frame while keeping the same held formation.
+void sim_update_handwriting(const uint8_t *bitmap, int width, int height,
+                            uint8_t color);
+// Animation bitmaps use the complete 64x64 canvas as a stable screen-space
+// coordinate system, so a moving outline travels instead of being re-centred
+// and re-scaled independently on every frame.
+void sim_show_animation_bitmap(const uint8_t *bitmap, int width, int height,
+                               uint8_t color, uint16_t fixed_particle_count,
+                               bool preserve_particle_cohort);
+void sim_update_animation_bitmap(const uint8_t *bitmap, int width, int height,
+                                 uint8_t color, bool allow_recruitment,
+                                 bool preserve_local_mapping,
+                                 bool preserve_stream_ownership,
+                                 uint16_t fixed_particle_count,
+                                 float motion_x, float motion_y);
 void sim_end_formation(void);
 void sim_release_formation(void);
 bool sim_formation_active(void);

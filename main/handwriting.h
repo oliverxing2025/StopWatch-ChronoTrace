@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define HANDWRITING_MAX_GLYPHS 6
+#define HANDWRITING_MAX_GLYPHS 12
 #define HANDWRITING_W 64
 #define HANDWRITING_H 64
 #define HANDWRITING_BYTES (HANDWRITING_W * HANDWRITING_H / 8)
@@ -36,4 +36,5 @@ void handwriting_snapshot(handwriting_view_t *view);
 uint8_t handwriting_count(void);
 const uint8_t *handwriting_glyph(uint8_t index);
 uint8_t handwriting_glyph_color(uint8_t index);
+uint8_t handwriting_delete_mask(uint16_t mask);
 void handwriting_color_rgb(uint8_t index, uint8_t *r, uint8_t *g, uint8_t *b);

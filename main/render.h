@@ -49,6 +49,17 @@ void render_set_wifi_editor(uint8_t mode, uint8_t language,
 // Page 0 documents the physical buttons; page 1 documents touch gestures.
 void render_set_operation_guide(bool visible, uint8_t language, uint8_t page);
 
+// Full-screen shape library. selection_rank stores 0 for unselected items and
+// 1..N for the user's playback order across 40 built-ins plus custom drawings.
+void render_set_shape_picker(bool visible, uint8_t language, uint8_t page,
+                             uint8_t custom_count,
+                             const uint8_t *selection_rank,
+                             uint8_t selection_count);
+// Switches the full-screen picker between static shapes and animated forms.
+// Vertical swipes are handled by the application and reflected here.
+void render_set_shape_picker_category(bool animation, bool selected,
+                                      uint8_t animation_item);
+
 // Full-screen cached weather card. It is deliberately independent of the
 // particle simulation so the last successful sample stays readable offline.
 void render_set_weather(bool visible, uint8_t language, uint8_t state,

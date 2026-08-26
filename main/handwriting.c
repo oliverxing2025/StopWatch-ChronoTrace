@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
@@ -15,8 +16,8 @@
 
 static const char *TAG = "handwriting";
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
-static uint8_t s_saved[HANDWRITING_MAX_GLYPHS][HANDWRITING_BYTES];
-static uint8_t s_draft[HANDWRITING_MAX_GLYPHS][HANDWRITING_BYTES];
+static EXT_RAM_BSS_ATTR uint8_t s_saved[HANDWRITING_MAX_GLYPHS][HANDWRITING_BYTES];
+static EXT_RAM_BSS_ATTR uint8_t s_draft[HANDWRITING_MAX_GLYPHS][HANDWRITING_BYTES];
 static uint8_t s_saved_colors[HANDWRITING_MAX_GLYPHS];
 static uint8_t s_draft_colors[HANDWRITING_MAX_GLYPHS];
 static uint8_t s_saved_count;
@@ -161,12 +162,15 @@ handwriting_result_t handwriting_poll(bool pressed, uint16_t x, uint16_t y)
         s_revision++;
     } else if (!pressed && s_was_pressed && !s_palette_gesture &&
                s_touch_y >= ACTION_Y) {
-        if (s_touch_x < 184) {
+        if (s_touch_x < 145) {
+            s_active = false;
+            result = HANDWRITING_RESULT_CANCELED;
+        } else if (s_touch_x < 233) {
             memset(s_draft[s_page], 0, HANDWRITING_BYTES);
             snprintf(s_hint, sizeof(s_hint), "%s", s_language ? "Deleted" : "已删除");
-        } else if (s_touch_x < 282) {
+        } else if (s_touch_x < 321) {
             if (!has_ink(s_draft[s_page])) s_hint[0] = 0;
-            else if (s_page + 1 >= HANDWRITING_MAX_GLYPHS) snprintf(s_hint, sizeof(s_hint), "%s", s_language ? "Up to 6" : "最多6个字");
+            else if (s_page + 1 >= HANDWRITING_MAX_GLYPHS) snprintf(s_hint, sizeof(s_hint), "%s", s_language ? "Up to 12" : "最多12个图形");
             else {
                 s_committed = s_page + 1;
                 s_draft_colors[s_page + 1] = s_draft_colors[s_page];
@@ -223,6 +227,45 @@ const uint8_t *handwriting_glyph(uint8_t index)
 uint8_t handwriting_glyph_color(uint8_t index)
 {
     return index < s_saved_count ? s_saved_colors[index] : HANDWRITING_DEFAULT_COLOR;
+}
+
+uint8_t handwriting_delete_mask(uint16_t mask)
+{
+    uint8_t removed = 0;
+    portENTER_CRITICAL(&s_lock);
+    const uint8_t old_count = s_saved_count;
+    uint8_t kept = 0;
+    for (uint8_t source = 0; source < old_count; source++) {
+        if (mask & (uint16_t)(1U << source)) {
+            removed++;
+            continue;
+        }
+        if (kept != source) {
+            memcpy(s_saved[kept], s_saved[source], HANDWRITING_BYTES);
+            s_saved_colors[kept] = s_saved_colors[source];
+        }
+        kept++;
+    }
+    if (removed) {
+        memset(&s_saved[kept][0], 0,
+               (size_t)(old_count - kept) * HANDWRITING_BYTES);
+        memset(&s_saved_colors[kept], HANDWRITING_DEFAULT_COLOR,
+               old_count - kept);
+        s_saved_count = kept;
+        s_revision++;
+    }
+    portEXIT_CRITICAL(&s_lock);
+
+    if (removed) {
+        const esp_err_t err = settings_save_handwriting(s_saved_count,
+                                                        &s_saved[0][0],
+                                                        HANDWRITING_BYTES,
+                                                        s_saved_colors);
+        ESP_LOGI(TAG, "deleted %u glyphs, %u remain: %s",
+                 (unsigned)removed, (unsigned)s_saved_count,
+                 esp_err_to_name(err));
+    }
+    return removed;
 }
 
 void handwriting_color_rgb(uint8_t index, uint8_t *r, uint8_t *g, uint8_t *b)

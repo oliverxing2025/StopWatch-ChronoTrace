@@ -118,15 +118,24 @@ static int64_t s_form_start_us;
 static int64_t s_form_until_us;
 static bool s_form_flat;
 static bool s_form_handwriting;
+static bool s_form_animation;
 static bool s_form_weather;
 static bool s_form_time;
 static bool s_form_analog;
 static bool s_form_random_shape;
+static bool s_form_battery;
+static int s_battery_charge_line_begin = -1;
+static int s_battery_charge_line_end = -1;
+static int64_t s_battery_charge_scatter_cycle = -1;
 static int s_analog_second_begin;
 static int s_analog_second_end;
 static uint8_t s_analog_initial_second;
 static int s_form_weather_digit_begin = -1;
 static uint8_t s_form_handwriting_color;
+static int s_animation_particle_limit = -1;
+static bool s_animation_cohort_locked;
+static float s_animation_last_motion_x;
+static float s_animation_last_motion_y;
 static bool s_form_pose_needs_snap;
 static float s_form_down_x;
 static float s_form_down_y = 1.0f;
@@ -139,7 +148,18 @@ static EXT_RAM_BSS_ATTR int16_t s_digit_slot_remap[PARTICLE_MAX];
 static EXT_RAM_BSS_ATTR uint8_t s_digit_new_slot_used[PARTICLE_MAX];
 static int64_t s_digit_transition_start_us;
 
-#define DIGIT_RELEASE_US 240000
+#define DIGIT_RELEASE_US 650000
+
+#define CHARGE_LINE_ASSEMBLE_US 2400000
+#define CHARGE_LINE_SETTLE_US 500000
+#define CHARGE_LINE_HOLD_US 450000
+#define CHARGE_LINE_SCATTER_US 700000
+#define CHARGE_LINE_PAUSE_US 300000
+#define CHARGE_LINE_CYCLE_US (CHARGE_LINE_ASSEMBLE_US + \
+                              CHARGE_LINE_SETTLE_US + \
+                              CHARGE_LINE_HOLD_US + \
+                              CHARGE_LINE_SCATTER_US + \
+                              CHARGE_LINE_PAUSE_US)
 
 // Five-column, seven-row clock digits. A set bit becomes a compact 2x2 group
 // of real simulation particles, so the result remains visibly liquid.
@@ -240,10 +260,13 @@ void sim_reset(void)
     s_form_until_us = 0;
     s_form_visible_count = s_count;
     s_form_handwriting = false;
+    s_form_animation = false;
     s_form_weather = false;
     s_form_time = false;
     s_form_analog = false;
     s_form_random_shape = false;
+    s_form_battery = false;
+    s_animation_cohort_locked = false;
     s_form_pose_needs_snap = false;
     s_time_digits_valid = false;
     memset(s_digit_transition_slot, 0, sizeof(s_digit_transition_slot));
@@ -335,10 +358,12 @@ static void configure_time(uint8_t hours, uint8_t minutes, bool persistent)
 {
     s_form_visible_count = s_count;
     s_form_handwriting = false;
+    s_form_animation = false;
     s_form_weather = false;
     s_form_time = true;
     s_form_analog = false;
     s_form_random_shape = false;
+    s_form_battery = false;
     const bool already_active = s_form_until_us != 0;
     const bool had_time_digits = already_active && s_time_digits_valid;
     const int previous_clock_count = s_form_clock_count;
@@ -374,20 +399,7 @@ static void configure_time(uint8_t hours, uint8_t minutes, bool persistent)
     s_form_clock_count = target_count;
     s_form_halo_count = s_count - target_count;
 
-    bool any_digit_changed = false;
-    for (int digit = 0; digit < 4; digit++) {
-        if (!changed[digit]) continue;
-        any_digit_changed = true;
-        // Transition flags use the new slot layout. Particle ownership is
-        // remapped below before the release impulse is applied.
-        int begin = s_time_digit_begin[digit];
-        int end = s_time_digit_end[digit];
-        if (begin < 0) begin = 0;
-        if (end > s_count) end = s_count;
-        for (int slot = begin; slot < end; slot++) {
-            s_digit_transition_slot[slot] = 1;
-        }
-    }
+    bool any_particle_released = false;
     for (int digit = 0; digit < 4; digit++) s_time_digits[digit] = next_digits[digit];
     s_time_digits_valid = true;
 
@@ -443,8 +455,9 @@ static void configure_time(uint8_t hours, uint8_t minutes, bool persistent)
             s_digit_new_slot_used[new_slot] = 1;
         }
 
-        // A glyph that grows recruits only from the liquid halo, never from
-        // its neighbour. This is the key to independent digit reformation.
+        // A glyph that grows recruits only its missing beads from the liquid
+        // halo, never from its neighbour. Existing beads remain assigned to
+        // the digit and the recruited beads are pulled in immediately.
         int old_halo_cursor = previous_clock_count;
         for (int digit = 0; digit < 4; digit++) {
             const int old_count = previous_end[digit] - previous_begin[digit];
@@ -458,12 +471,12 @@ static void configure_time(uint8_t hours, uint8_t minutes, bool persistent)
                 const int new_slot = s_time_digit_begin[digit] + offset;
                 s_digit_slot_remap[old_halo_cursor++] = (int16_t)new_slot;
                 s_digit_new_slot_used[new_slot] = 1;
-                s_digit_transition_slot[new_slot] = 1;
             }
         }
 
-        // Surplus beads from a shrinking glyph return to the first available
-        // halo slots; remaining halo beads keep a one-to-one permutation.
+        // Only surplus beads from a shrinking glyph are released. The common
+        // portion stays in the digit; remaining halo beads keep a one-to-one
+        // permutation and are never made to fall just because a digit changed.
         int new_slot_cursor = 0;
         for (int old_slot = 0; old_slot < s_count; old_slot++) {
             if (s_digit_slot_remap[old_slot] >= 0) continue;
@@ -478,6 +491,7 @@ static void configure_time(uint8_t hours, uint8_t minutes, bool persistent)
                 if (changed[digit] && old_slot >= previous_begin[digit] &&
                     old_slot < previous_end[digit]) {
                     s_digit_transition_slot[new_slot_cursor] = 1;
+                    any_particle_released = true;
                     break;
                 }
             }
@@ -494,17 +508,19 @@ static void configure_time(uint8_t hours, uint8_t minutes, bool persistent)
     }
 
     s_form_start_us = esp_timer_get_time();
-    if (any_digit_changed) {
+    if (any_particle_released) {
         s_digit_transition_start_us = s_form_start_us;
         for (int i = 0; i < s_count; i++) {
             const int slot = s_slot[i];
             if (slot < 0 || slot >= s_count || !s_digit_transition_slot[slot]) continue;
-            // Let changed glyphs loosen and fall before their new attractors
-            // take over. The unequal impulse prevents a mechanical curtain.
-            const float side = (rand_unit() - 0.5f) * 42.0f;
-            s_p->vel[i][0] += side;
-            s_p->vel[i][1] += 48.0f + rand_unit() * 46.0f;
-            s_p->vel[i][2] += (rand_unit() - 0.5f) * 34.0f;
+            // Loosen only surplus beads along the clock's current physical-
+            // down direction. Common beads stay in the changing digit, while
+            // a growing digit receives only the missing beads from the halo.
+            const float side = (rand_unit() - 0.5f) * 12.0f;
+            const float fall = 18.0f + rand_unit() * 18.0f;
+            s_p->vel[i][0] += s_form_down_x * fall + s_form_down_y * side;
+            s_p->vel[i][1] += s_form_down_y * fall - s_form_down_x * side;
+            s_p->vel[i][2] += (rand_unit() - 0.5f) * 12.0f;
         }
     }
     s_form_until_us = persistent ? INT64_MAX : s_form_start_us + FORM_DURATION_US;
@@ -638,10 +654,12 @@ static void configure_analog_time(uint8_t hours, uint8_t minutes,
     s_form_halo_count = 0;
     s_form_visible_count = s_count;
     s_form_handwriting = false;
+    s_form_animation = false;
     s_form_weather = false;
     s_form_time = true;
     s_form_analog = true;
     s_form_random_shape = false;
+    s_form_battery = false;
     s_analog_initial_second = seconds % 60;
     s_time_digits_valid = false;
     memset(s_digit_transition_slot, 0, sizeof(s_digit_transition_slot));
@@ -715,10 +733,12 @@ void sim_show_random_shape(void)
     s_form_halo_count = 0;
     s_form_visible_count = s_count;
     s_form_handwriting = false;
+    s_form_animation = false;
     s_form_weather = false;
     s_form_time = false;
     s_form_analog = false;
     s_form_random_shape = true;
+    s_form_battery = false;
     s_time_digits_valid = false;
     memset(s_digit_transition_slot, 0, sizeof(s_digit_transition_slot));
     s_form_pose_needs_snap = true;
@@ -798,7 +818,7 @@ static void add_battery_digit(uint8_t digit, int first_column,
     }
 }
 
-void sim_show_battery(uint8_t percent)
+void sim_show_battery(uint8_t percent, bool charging)
 {
     s_form_visible_count = s_count;
     if (percent > 100) percent = 100;
@@ -883,21 +903,39 @@ void sim_show_battery(uint8_t percent)
                           digit_start_x, digit_top_y, &target_count);
     }
 
+    s_battery_charge_line_begin = -1;
+    s_battery_charge_line_end = -1;
+    s_battery_charge_scatter_cycle = -1;
+    if (charging) {
+        // A bead-for-bead rail directly below the main body. Its first and
+        // last targets align with the battery sides, so the completed charging
+        // line keeps exactly the body's original visual length.
+        s_battery_charge_line_begin = target_count;
+        const float charge_line_y = bottom + 35.0f;
+        for (int column = 0; column <= body_last_column; column++) {
+            add_battery_frame_bead(left + (float)column * x_step,
+                                   charge_line_y, &target_count);
+        }
+        s_battery_charge_line_end = target_count;
+    }
+
     s_form_clock_count = target_count;
     s_form_halo_count = 0;
     s_form_handwriting = false;
+    s_form_animation = false;
     s_form_weather = false;
     s_form_time = false;
     s_form_analog = false;
     s_form_random_shape = false;
+    s_form_battery = true;
     s_time_digits_valid = false;
     memset(s_digit_transition_slot, 0, sizeof(s_digit_transition_slot));
     for (int i = 0; i < s_count; i++) s_slot[i] = (int16_t)i;
     s_form_pose_needs_snap = true;
     s_form_start_us = esp_timer_get_time();
-    s_form_until_us = s_form_start_us + FORM_DURATION_US;
-    ESP_LOGI(TAG, "particle battery %u%% using %d particles",
-             (unsigned)percent, target_count);
+    s_form_until_us = charging ? INT64_MAX : s_form_start_us + FORM_DURATION_US;
+    ESP_LOGI(TAG, "particle battery %u%% charging=%d using %d particles",
+             (unsigned)percent, charging, target_count);
 }
 
 static void add_weather_bead(float x, float y, int *target_count)
@@ -1193,6 +1231,13 @@ void sim_show_weather(int16_t minimum_c, int16_t maximum_c,
                          7.0f, &target_count);
         cursor += gap;
         add_weather_value(maximum_c, cursor, top_y, cell, &target_count);
+        // Keep every range numeral and separator bead on one physical depth
+        // plane. Mixed depth layers project at slightly different scales and
+        // made the otherwise straight seven-segment strokes look wavy on the
+        // curved AMOLED cover glass.
+        for (int slot = s_form_weather_digit_begin; slot < target_count; slot++) {
+            s_form_target[slot][2] = WALL_MARGIN + 9.0f;
+        }
     } else {
         s_form_weather_digit_begin = target_count;
     }
@@ -1203,10 +1248,12 @@ void sim_show_weather(int16_t minimum_c, int16_t maximum_c,
     // every unused particle remains visible and settles naturally as before.
     s_form_visible_count = s_count;
     s_form_handwriting = false;
+    s_form_animation = false;
     s_form_weather = true;
     s_form_time = false;
     s_form_analog = false;
     s_form_random_shape = false;
+    s_form_battery = false;
     s_time_digits_valid = false;
     memset(s_digit_transition_slot, 0, sizeof(s_digit_transition_slot));
     for (int i = 0; i < s_count; i++) s_slot[i] = (int16_t)i;
@@ -1218,22 +1265,31 @@ void sim_show_weather(int16_t minimum_c, int16_t maximum_c,
              target_count, s_form_visible_count - target_count);
 }
 
-void sim_show_handwriting(const uint8_t *bitmap, int width, int height, uint8_t color)
+static void set_handwriting_formation(const uint8_t *bitmap, int width, int height,
+                                      uint8_t color, bool announce,
+                                      bool fixed_canvas,
+                                      bool allow_animation_recruitment,
+                                      bool preserve_local_mapping,
+                                      bool preserve_stream_ownership,
+                                      uint16_t fixed_particle_count)
 {
     if (!bitmap || width <= 0 || height <= 0) return;
     s_form_visible_count = s_count;
     static EXT_RAM_BSS_ATTR uint8_t thinned[64 * 64];
     static EXT_RAM_BSS_ATTR uint8_t remove[64 * 64];
     static EXT_RAM_BSS_ATTR uint16_t ink[64 * 64];
+    static EXT_RAM_BSS_ATTR float previous_targets[PARTICLE_MAX][3];
+    static EXT_RAM_BSS_ATTR float generated_targets[PARTICLE_MAX][3];
+    static EXT_RAM_BSS_ATTR uint8_t generated_used[PARTICLE_MAX];
     memset(thinned, 0, sizeof(thinned));
     for (int bit = 0; bit < width * height; bit++) {
         thinned[bit] = (bitmap[bit >> 3] >> (bit & 7)) & 1U;
     }
 
-    // Zhang-Suen thinning turns the three-pixel input brush into a clean,
-    // topology-preserving centreline. Loops in 8/0/中 stay open instead of
-    // becoming dense particle blobs.
-    for (int iteration = 0; iteration < 32; iteration++) {
+    // Handwriting uses a topology-preserving centreline. Animation bitmaps are
+    // already intentional particle fields (including solid silhouettes), so
+    // thinning them would collapse a filled arrow into a narrow skeleton.
+    for (int iteration = 0; !fixed_canvas && iteration < 32; iteration++) {
         bool changed = false;
         for (int phase = 0; phase < 2; phase++) {
             memset(remove, 0, sizeof(remove));
@@ -1277,12 +1333,49 @@ void sim_show_handwriting(const uint8_t *bitmap, int width, int height, uint8_t 
     if (ink_count == 0) return;
 
     const bool already_active = s_form_until_us != 0;
-    int stroke_particles = ink_count * 2;
-    if (stroke_particles < 160) stroke_particles = 160;
+    const int previous_target_count = s_form_clock_count;
+    if (preserve_local_mapping && already_active && previous_target_count > 0) {
+        memcpy(previous_targets, s_form_target,
+               (size_t)previous_target_count * sizeof(previous_targets[0]));
+    }
+    // Moving solid silhouettes already contain area, not a one-cell stroke.
+    // One physical bead per source cell keeps their straight edges readable;
+    // duplicating every cell made the arrow merge into a swollen blob.
+    int stroke_particles = fixed_canvas ? ink_count : ink_count * 2;
+    if (fixed_canvas && fixed_particle_count > 0) {
+        // Fireworks collect their complete cohort while the launch ball is
+        // still in the pool. The same fixed slots are then redistributed into
+        // the burst; no particle may be recruited at the explosion frame.
+        stroke_particles = fixed_particle_count;
+    }
+    const int minimum_particles = fixed_canvas ? 0 : 160;
+    if (stroke_particles < minimum_particles) stroke_particles = minimum_particles;
     if (stroke_particles > s_count / 2) stroke_particles = s_count / 2;
+    bool lock_animation_now = false;
+    if (fixed_canvas && !allow_animation_recruitment) {
+        // Once an animation owns a cohort, changing raster coverage must only
+        // redistribute those same beads. This prevents heartbeat, DNA,
+        // fireworks and rain streams from borrowing liquid particles (or from
+        // one another) while their silhouettes evolve.
+        if (s_animation_particle_limit < 0) {
+            s_animation_particle_limit = stroke_particles;
+        }
+        stroke_particles = s_animation_particle_limit;
+        // Moving arrows intentionally build while entering the screen. Their
+        // rigid cohort is locked only at the first fully visible frame;
+        // locally remapped animations keep changing shape with the same count.
+        lock_animation_now = !preserve_local_mapping;
+    }
     const float span_x = (float)(max_x - min_x + 1);
     const float span_y = (float)(max_y - min_y + 1);
-    const float scale = fminf(265.0f / span_x, 265.0f / span_y);
+    // Seven pixels per animation cell gives a projected span of about 425 px,
+    // leaving only the particle-radius safety margin at the circular bezel.
+    const float scale = fixed_canvas ? 7.0f :
+                        fminf(265.0f / span_x, 265.0f / span_y);
+    const float center_x = fixed_canvas ? (float)(width - 1) * 0.5f :
+                           (float)(min_x + max_x) * 0.5f;
+    const float center_y = fixed_canvas ? (float)(height - 1) * 0.5f :
+                           (float)(min_y + max_y) * 0.5f;
     int target_count = 0;
     for (int i = 0; i < stroke_particles; i++) {
         const int source = (int)(((int64_t)i * ink_count) / stroke_particles);
@@ -1291,19 +1384,117 @@ void sim_show_handwriting(const uint8_t *bitmap, int width, int height, uint8_t 
         // targets instead of a visible sparkle caused by random relocation.
         uint32_t hash = (uint32_t)(source * 2654435761U) ^ (uint32_t)(i * 2246822519U);
         hash ^= hash >> 15;
-        const float jitter_x = ((float)(hash & 255U) / 255.0f - 0.5f) * 5.0f;
-        const float jitter_y = ((float)((hash >> 8) & 255U) / 255.0f - 0.5f) * 5.0f;
-        s_form_target[target_count][0] = ((float)x - (min_x + max_x) * 0.5f) * scale +
-                                         jitter_x;
-        s_form_target[target_count][1] = ((float)y - (min_y + max_y) * 0.5f) * scale +
-                                         jitter_y;
-        s_form_target[target_count][2] = WALL_MARGIN + 5.0f + (float)(i % 3) * 2.0f;
+        const float jitter_span = fixed_canvas ? 0.0f : 5.0f;
+        const float jitter_x = ((float)(hash & 255U) / 255.0f - 0.5f) *
+                               jitter_span;
+        const float jitter_y = ((float)((hash >> 8) & 255U) / 255.0f - 0.5f) *
+                               jitter_span;
+        generated_targets[target_count][0] = ((float)x - center_x) * scale +
+                                              jitter_x;
+        generated_targets[target_count][1] = ((float)y - center_y) * scale +
+                                              jitter_y;
+        generated_targets[target_count][2] = WALL_MARGIN + 5.0f +
+                                              (float)(i % 3) * 2.0f;
         target_count++;
     }
+    if (preserve_local_mapping && already_active && previous_target_count > 0) {
+        memset(generated_used, 0, (size_t)target_count);
+        const int retained = previous_target_count < target_count ?
+                             previous_target_count : target_count;
+        // Keep each bead on the nearest point of the evolving contour. This
+        // makes a heart expand in place and DNA strands rotate locally instead
+        // of renumbering row-major pixels and sending every bead around the
+        // complete drawing on every frame.
+        for (int slot = 0; slot < retained; slot++) {
+            int nearest = -1;
+            float nearest_r2 = 1.0e30f;
+            for (int candidate = 0; candidate < target_count; candidate++) {
+                if (generated_used[candidate]) continue;
+                const float dx = generated_targets[candidate][0] -
+                                 previous_targets[slot][0];
+                // Particle-rain streams own fixed cohorts. The 14-pixel gate
+                // is much narrower than the 35-pixel minimum column spacing,
+                // so a bead can move vertically only within its original rain
+                // column and can never be borrowed by a neighbour.
+                if (preserve_stream_ownership && fabsf(dx) > 14.0f) continue;
+                const float dy = generated_targets[candidate][1] -
+                                 previous_targets[slot][1];
+                const float r2 = dx * dx + dy * dy;
+                if (r2 < nearest_r2) {
+                    nearest_r2 = r2;
+                    nearest = candidate;
+                }
+            }
+            if (nearest < 0) {
+                if (preserve_stream_ownership) {
+                    memcpy(s_form_target[slot], previous_targets[slot],
+                           sizeof(s_form_target[slot]));
+                    continue;
+                }
+                break;
+            }
+            generated_used[nearest] = 1;
+            memcpy(s_form_target[slot], generated_targets[nearest],
+                   sizeof(s_form_target[slot]));
+        }
+        int next = 0;
+        for (int slot = retained; slot < target_count; slot++) {
+            while (next < target_count && generated_used[next]) next++;
+            if (next >= target_count) break;
+            generated_used[next] = 1;
+            memcpy(s_form_target[slot], generated_targets[next],
+                   sizeof(s_form_target[slot]));
+        }
+    } else {
+        memcpy(s_form_target, generated_targets,
+               (size_t)target_count * sizeof(s_form_target[0]));
+    }
     s_form_clock_count = target_count;
-    s_form_halo_count = s_count - target_count;
+    if (lock_animation_now) {
+        s_animation_cohort_locked = true;
+        // Free beads already touching the arrow at lock time would otherwise
+        // be carried along by the liquid viscosity. Separate only this thin
+        // contact layer; the rest of the pool is left completely untouched.
+        const float contact_r2 = SMOOTH_RADIUS * SMOOTH_RADIUS;
+        for (int i = 0; i < s_count; i++) {
+            if (s_slot[i] >= 0 && s_slot[i] < target_count) continue;
+            float nearest_r2 = contact_r2;
+            float nearest_dx = 0.0f;
+            float nearest_dy = 0.0f;
+            for (int j = 0; j < s_count; j++) {
+                if (s_slot[j] < 0 || s_slot[j] >= target_count) continue;
+                const float dx = s_p->pos[i][0] - s_p->pos[j][0];
+                const float dy = s_p->pos[i][1] - s_p->pos[j][1];
+                const float r2 = dx * dx + dy * dy;
+                if (r2 < nearest_r2) {
+                    nearest_r2 = r2;
+                    nearest_dx = dx;
+                    nearest_dy = dy;
+                }
+            }
+            if (nearest_r2 >= contact_r2) continue;
+            float distance = sqrtf(nearest_r2);
+            if (distance < 1.0f) {
+                nearest_dx = s_form_down_x;
+                nearest_dy = s_form_down_y;
+                distance = 1.0f;
+            }
+            const float nx = nearest_dx / distance;
+            const float ny = nearest_dy / distance;
+            const float proximity = 1.0f - distance / SMOOTH_RADIUS;
+            const float impulse = 34.0f + proximity * 42.0f;
+            s_p->vel[i][0] += nx * impulse + s_form_down_x * 8.0f;
+            s_p->vel[i][1] += ny * impulse + s_form_down_y * 8.0f;
+            s_p->pos[i][0] += nx * (2.0f + proximity * 3.0f);
+            s_p->pos[i][1] += ny * (2.0f + proximity * 3.0f);
+        }
+    }
+    // Pixels outside an animation remain ordinary liquid. As a moving bitmap
+    // enters or leaves the fixed canvas, particles are therefore recruited or
+    // released one group at a time rather than being parked in a halo.
+    s_form_halo_count = fixed_canvas ? 0 : s_count - target_count;
     const float golden_angle = 2.39996323f;
-    for (int i = target_count; i < s_count; i++) {
+    for (int i = target_count; !fixed_canvas && i < s_count; i++) {
         const int ring = i - target_count;
         const float radius = 150.0f + 14.0f * (float)(ring & 3);
         const float angle = golden_angle * (float)ring;
@@ -1318,15 +1509,98 @@ void sim_show_handwriting(const uint8_t *bitmap, int width, int height, uint8_t 
     s_form_start_us = esp_timer_get_time();
     s_form_until_us = INT64_MAX;
     s_form_handwriting = true;
+    s_form_animation = fixed_canvas;
     s_form_weather = false;
     s_form_time = false;
     s_form_analog = false;
     s_form_random_shape = false;
+    s_form_battery = false;
     s_time_digits_valid = false;
     memset(s_digit_transition_slot, 0, sizeof(s_digit_transition_slot));
     s_form_handwriting_color = color;
-    ESP_LOGI(TAG, "handwriting formation: %d centreline cells, %d particles",
-             ink_count, target_count);
+    if (announce) {
+        ESP_LOGI(TAG, "handwriting formation: %d centreline cells, %d particles",
+                 ink_count, target_count);
+    }
+}
+
+void sim_show_handwriting(const uint8_t *bitmap, int width, int height, uint8_t color)
+{
+    s_animation_cohort_locked = false;
+    s_animation_particle_limit = -1;
+    set_handwriting_formation(bitmap, width, height, color, true, false, true,
+                              false, false, 0);
+}
+
+void sim_update_handwriting(const uint8_t *bitmap, int width, int height,
+                            uint8_t color)
+{
+    set_handwriting_formation(bitmap, width, height, color, false, false, true,
+                              false, false, 0);
+}
+
+void sim_show_animation_bitmap(const uint8_t *bitmap, int width, int height,
+                               uint8_t color, uint16_t fixed_particle_count,
+                               bool preserve_particle_cohort)
+{
+    s_animation_particle_limit = -1;
+    s_animation_cohort_locked = false;
+    set_handwriting_formation(bitmap, width, height, color, true, true, true,
+                              false, false, fixed_particle_count);
+    if (preserve_particle_cohort) {
+        // Capture ownership at animation start. Every later frame keeps this
+        // exact cohort even when the bitmap contains more or fewer cells.
+        s_animation_particle_limit = s_form_clock_count;
+    }
+}
+
+void sim_update_animation_bitmap(const uint8_t *bitmap, int width, int height,
+                                 uint8_t color, bool allow_recruitment,
+                                 bool preserve_local_mapping,
+                                 bool preserve_stream_ownership,
+                                 uint16_t fixed_particle_count,
+                                 float motion_x, float motion_y)
+{
+    if (s_animation_cohort_locked) {
+        // Once the complete arrow is visible, keep each bead bound to the
+        // same slot and translate the whole cohort rigidly. Rebuilding the
+        // clipped raster here used to renumber row-major slots, most visibly
+        // for vertical arrows, and released an internal string of beads while
+        // the arrow was still crossing the screen.
+        const float dx = motion_x - s_animation_last_motion_x;
+        const float dy = motion_y - s_animation_last_motion_y;
+        for (int slot = 0; slot < s_form_clock_count; slot++) {
+            s_form_target[slot][0] += dx;
+            s_form_target[slot][1] += dy;
+        }
+        s_animation_last_motion_x = motion_x;
+        s_animation_last_motion_y = motion_y;
+
+        // A bead becomes ordinary liquid only after its own centre reaches
+        // the usable circular edge. This preserves a solid arrow throughout
+        // the traverse, then produces the requested progressive edge breakup.
+        const float release_radius = BOX_CORNER_R - WALL_MARGIN -
+                                     PARTICLE_RADIUS_PX * 0.45f;
+        const float release_r2 = release_radius * release_radius;
+        for (int i = 0; i < s_count; i++) {
+            const int slot = s_slot[i];
+            if (slot < 0 || slot >= s_form_clock_count) continue;
+            const float tx = s_form_target[slot][0];
+            const float ty = s_form_target[slot][1];
+            if (tx * tx + ty * ty <= release_r2) continue;
+            s_slot[i] = -1;
+        }
+        return;
+    }
+
+    set_handwriting_formation(bitmap, width, height, color, false, true,
+                              allow_recruitment, preserve_local_mapping,
+                              preserve_stream_ownership,
+                              fixed_particle_count);
+    if (s_animation_cohort_locked) {
+        s_animation_last_motion_x = motion_x;
+        s_animation_last_motion_y = motion_y;
+    }
 }
 
 void sim_end_formation(void)
@@ -1334,10 +1608,13 @@ void sim_end_formation(void)
     s_form_visible_count = s_count;
     s_form_until_us = 0;
     s_form_handwriting = false;
+    s_form_animation = false;
     s_form_weather = false;
     s_form_time = false;
     s_form_analog = false;
     s_form_random_shape = false;
+    s_form_battery = false;
+    s_animation_cohort_locked = false;
     s_form_pose_needs_snap = false;
 }
 
@@ -1364,10 +1641,13 @@ void sim_release_formation(void)
     }
     s_form_until_us = 0;
     s_form_handwriting = false;
+    s_form_animation = false;
     s_form_weather = false;
     s_form_time = false;
     s_form_analog = false;
     s_form_random_shape = false;
+    s_form_battery = false;
+    s_animation_cohort_locked = false;
     s_form_pose_needs_snap = false;
     ESP_LOGI(TAG, "formation released into natural fluid motion");
 }
@@ -1537,6 +1817,14 @@ static void neighbourhood_for_cell(int cx, int cy, int cz, neighbourhood_t *nb)
 // from total displacement at the end of the substep, so the result is
 // identical. Offsets go to a separate buffer, otherwise moving a particle
 // mid-walk would corrupt the densities still being summed.
+static inline bool crosses_locked_animation_cohort(int i, int j)
+{
+    if (!s_animation_cohort_locked) return false;
+    const bool i_formed = s_slot[i] >= 0 && s_slot[i] < s_form_clock_count;
+    const bool j_formed = s_slot[j] >= 0 && s_slot[j] < s_form_clock_count;
+    return i_formed != j_formed;
+}
+
 static void compute_densities_and_viscosity(float dt)
 {
     const float h2 = SMOOTH_RADIUS * SMOOTH_RADIUS;
@@ -1575,6 +1863,10 @@ static void compute_densities_and_viscosity(float dt)
                     j = i + 1;  // every pair is visited exactly once
                 }
                 for (; j < nb.end[run]; j++) {
+                    // Once the arrow cohort is locked, free liquid must not be
+                    // entrained by its viscosity. Released edge particles stop
+                    // being formed and immediately rejoin the ordinary solver.
+                    if (crosses_locked_animation_cohort(i, j)) continue;
                     const float dx = s_p->pos[j][0] - xi;
                     const float dy = s_p->pos[j][1] - yi;
                     const float dz = s_p->pos[j][2] - zi;
@@ -1655,6 +1947,7 @@ static inline void relax_pair(int i, int j, float xi, float yi, float zi,
                               float inv_h, float *mx, float *my, float *mz,
                               int *clamped)
 {
+    if (crosses_locked_animation_cohort(i, j)) return;
     const float dx = s_p->pos[j][0] - xi;
     const float dy = s_p->pos[j][1] - yi;
     const float dz = s_p->pos[j][2] - zi;
@@ -2045,6 +2338,27 @@ static bool formation_target(int slot, int64_t now, float *x, float *y, float *z
     float lx = s_form_target[slot][0];
     float ly = s_form_target[slot][1];
 
+    if (s_form_battery && slot >= s_battery_charge_line_begin &&
+        slot < s_battery_charge_line_end) {
+        const int line_count = s_battery_charge_line_end -
+                               s_battery_charge_line_begin;
+        const int line_index = slot - s_battery_charge_line_begin;
+        const int64_t cycle_elapsed =
+            (now - s_form_start_us) % CHARGE_LINE_CYCLE_US;
+        const int64_t activation_us = line_count > 1 ?
+            ((int64_t)line_index * CHARGE_LINE_ASSEMBLE_US) /
+                (line_count - 1) : 0;
+        const int64_t scatter_start = CHARGE_LINE_ASSEMBLE_US +
+                                      CHARGE_LINE_SETTLE_US +
+                                      CHARGE_LINE_HOLD_US;
+        // During assembly, beads are admitted one after another from left to
+        // right. During scatter and the short pause, the same real particles
+        // are fully released to gravity and the liquid solver.
+        if (cycle_elapsed < activation_us || cycle_elapsed >= scatter_start) {
+            return false;
+        }
+    }
+
     if (s_form_analog && slot >= s_analog_second_begin &&
         slot < s_analog_second_end) {
         // One physical bead column rotates as a continuous sweep second hand.
@@ -2060,13 +2374,17 @@ static bool formation_target(int slot, int64_t now, float *x, float *y, float *z
         if (!s_form_handwriting && !s_form_analog) {
             const bool weather_digit = s_form_weather &&
                                        slot >= s_form_weather_digit_begin;
-            const float breathe_amount = weather_digit ? 0.0f :
+            // Keep the battery's designed rectangular cavity unchanged.
+            // Breathing and per-bead currents look natural on digits and
+            // weather, but make the two long cavity walls appear pinched.
+            const bool stable_battery = s_form_battery;
+            const float breathe_amount = (weather_digit || stable_battery) ? 0.0f :
                                          (s_form_weather ? 0.004f : 0.012f);
-            const float vertical_wave = weather_digit ? 0.0f :
+            const float vertical_wave = (weather_digit || stable_battery) ? 0.0f :
                                         (s_form_weather ? 0.6f : 2.5f);
-            const float bead_x = weather_digit ? 0.0f :
+            const float bead_x = (weather_digit || stable_battery) ? 0.0f :
                                  (s_form_weather ? 0.28f : 1.35f);
-            const float bead_y = weather_digit ? 0.0f :
+            const float bead_y = (weather_digit || stable_battery) ? 0.0f :
                                  (s_form_weather ? 0.18f : 0.85f);
             const float breathe = 1.0f + breathe_amount * sinf(elapsed * 2.6f);
             lx *= breathe;
@@ -2098,7 +2416,7 @@ static bool formation_target(int slot, int64_t now, float *x, float *y, float *z
     if (slot < s_form_clock_count && !s_form_handwriting && !s_form_analog) {
         const bool weather_digit = s_form_weather &&
                                    slot >= s_form_weather_digit_begin;
-        const float depth_wave = weather_digit ? 0.0f :
+        const float depth_wave = (weather_digit || s_form_battery) ? 0.0f :
                                  (s_form_weather ? 0.7f : 2.8f);
         target_z += depth_wave * sinf(elapsed * 1.55f + (float)slot * 0.37f);
     }
@@ -2116,6 +2434,33 @@ static void apply_formation(void)
         return;
     }
 
+    if (s_form_battery && s_battery_charge_line_begin >= 0 &&
+        s_battery_charge_line_end > s_battery_charge_line_begin) {
+        const int64_t elapsed_us = now - s_form_start_us;
+        const int64_t cycle = elapsed_us / CHARGE_LINE_CYCLE_US;
+        const int64_t cycle_elapsed = elapsed_us % CHARGE_LINE_CYCLE_US;
+        const int64_t scatter_start = CHARGE_LINE_ASSEMBLE_US +
+                                      CHARGE_LINE_SETTLE_US +
+                                      CHARGE_LINE_HOLD_US;
+        if (cycle_elapsed >= scatter_start &&
+            cycle_elapsed < scatter_start + CHARGE_LINE_SCATTER_US &&
+            cycle != s_battery_charge_scatter_cycle) {
+            s_battery_charge_scatter_cycle = cycle;
+            const float right_x = s_form_down_y;
+            const float right_y = -s_form_down_x;
+            for (int i = 0; i < s_count; i++) {
+                const int slot = s_slot[i];
+                if (slot < s_battery_charge_line_begin ||
+                    slot >= s_battery_charge_line_end) continue;
+                const float sideways = (rand_unit() - 0.5f) * 150.0f;
+                const float drop = 85.0f + rand_unit() * 75.0f;
+                s_p->vel[i][0] += right_x * sideways + s_form_down_x * drop;
+                s_p->vel[i][1] += right_y * sideways + s_form_down_y * drop;
+                s_p->vel[i][2] += (rand_unit() - 0.5f) * 55.0f;
+            }
+        }
+    }
+
     for (int i = 0; i < s_count; i++) {
         float tx, ty, tz;
         const int slot = s_slot[i];
@@ -2127,16 +2472,31 @@ static void apply_formation(void)
         const bool clock_particle = slot < s_form_clock_count;
         const bool weather_digit = clock_particle && s_form_weather &&
                                    slot >= s_form_weather_digit_begin;
-        const float pull = weather_digit ? 0.23f :
-                           (clock_particle ? (s_form_handwriting ? 0.20f : 0.16f) : 0.065f);
+        const bool stable_battery = clock_particle && s_form_battery;
+        // Moving arrows need a firmer target constraint than stationary ink.
+        // Otherwise upward motion fights gravity and rounds the triangular
+        // head into an indistinct cluster even though the bitmap is correct.
+        const bool moving_arrow = clock_particle && s_form_animation &&
+                                  s_animation_particle_limit >= 0;
+        const float pull = moving_arrow ? 0.34f :
+                           (weather_digit ? 0.32f :
+                           (stable_battery ? 0.24f :
+                            (clock_particle ?
+                                 (s_form_handwriting ? 0.20f : 0.16f) : 0.065f)));
         s_p->pos[i][0] += dx * pull;
         s_p->pos[i][1] += dy * pull;
         s_p->pos[i][2] += dz * pull;
 
-        const float velocity_keep = weather_digit ? 0.05f :
-                                    (clock_particle ? (s_form_handwriting ? 0.05f : 0.16f) : 0.30f);
-        const float target_velocity = weather_digit ? 0.36f :
-                                      (s_form_handwriting ? 0.10f : 0.30f);
+        const float velocity_keep = moving_arrow ? 0.02f :
+                                    (weather_digit ? 0.03f :
+                                    (stable_battery ? 0.05f :
+                                     (clock_particle ?
+                                          (s_form_handwriting ? 0.05f : 0.16f) :
+                                          0.30f)));
+        const float target_velocity = moving_arrow ? 0.46f :
+                                      (weather_digit ? 0.48f :
+                                      (stable_battery ? 0.36f :
+                                       (s_form_handwriting ? 0.10f : 0.30f)));
         s_p->vel[i][0] = s_p->vel[i][0] * velocity_keep + dx * target_velocity;
         s_p->vel[i][1] = s_p->vel[i][1] * velocity_keep + dy * target_velocity;
         s_p->vel[i][2] = s_p->vel[i][2] * velocity_keep + dz * target_velocity;

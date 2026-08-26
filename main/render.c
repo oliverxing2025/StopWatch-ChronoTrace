@@ -8,13 +8,17 @@
 #include <time.h>
 
 #include "config.h"
+#include "animation_library.h"
 #include "boot_logo.h"
+#include "countdown_play_icon.h"
+#include "countdown_timer_icon.h"
 #include "display.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "handwriting.h"
+#include "shape_library.h"
 #include "ui_font.h"
 
 // The panel takes RGB565 with the bytes the other way round from how the CPU
@@ -99,6 +103,15 @@ static volatile uint32_t s_wifi_editor_revision;
 static volatile bool s_operation_guide_visible;
 static volatile uint8_t s_operation_guide_page;
 static volatile uint32_t s_operation_guide_revision;
+static volatile bool s_shape_picker_visible;
+static volatile uint8_t s_shape_picker_page;
+static volatile uint8_t s_shape_picker_custom_count;
+static volatile uint8_t s_shape_picker_selection_count;
+static volatile bool s_shape_picker_animation;
+static volatile bool s_animation_picker_selected;
+static volatile uint8_t s_animation_picker_item;
+static uint8_t s_shape_picker_rank[SHAPE_LIBRARY_COUNT + HANDWRITING_MAX_GLYPHS];
+static volatile uint32_t s_shape_picker_revision;
 static volatile bool s_weather_visible;
 static volatile uint8_t s_weather_state;
 static volatile bool s_weather_valid;
@@ -394,6 +407,37 @@ void render_set_operation_guide(bool visible, uint8_t language, uint8_t page)
     s_force_full = true;
 }
 
+void render_set_shape_picker(bool visible, uint8_t language, uint8_t page,
+                             uint8_t custom_count,
+                             const uint8_t *selection_rank,
+                             uint8_t selection_count)
+{
+    s_ui_language = language ? 1 : 0;
+    if (custom_count > HANDWRITING_MAX_GLYPHS) custom_count = HANDWRITING_MAX_GLYPHS;
+    s_shape_picker_visible = visible;
+    s_shape_picker_page = page;
+    s_shape_picker_custom_count = custom_count;
+    s_shape_picker_selection_count = selection_count;
+    memset(s_shape_picker_rank, 0, sizeof(s_shape_picker_rank));
+    if (selection_rank) {
+        memcpy(s_shape_picker_rank, selection_rank,
+               SHAPE_LIBRARY_COUNT + custom_count);
+    }
+    s_shape_picker_revision++;
+    s_force_full = true;
+}
+
+void render_set_shape_picker_category(bool animation, bool selected,
+                                      uint8_t animation_item)
+{
+    s_shape_picker_animation = animation;
+    s_animation_picker_selected = selected;
+    s_animation_picker_item = animation_item < ANIMATION_LIBRARY_COUNT ?
+                              animation_item : 0;
+    s_shape_picker_revision++;
+    s_force_full = true;
+}
+
 void render_show_message(const char *message)
 {
     if (message == NULL) return;
@@ -452,6 +496,28 @@ static uint16_t blend_color_4bpp(uint16_t swapped_destination,
     const int g = dg + ((sg - dg) * alpha + (sg >= dg ? 7 : -7)) / 15;
     const int b = db + ((sb - db) * alpha + (sb >= db ? 7 : -7)) / 15;
     return SWAP16((uint16_t)((r << 11) | (g << 5) | b));
+}
+
+static void draw_rgba_icon(uint16_t *buf, int band_y0, const uint8_t *rgba,
+                           int width, int height, int center_x, int center_y)
+{
+    const int left = center_x - width / 2;
+    const int top = center_y - height / 2;
+    for (int iy = 0; iy < height; iy++) {
+        const int screen_y = top + iy;
+        if (screen_y < band_y0 || screen_y >= band_y0 + BAND_ROWS ||
+            screen_y < 0 || screen_y >= LCD_V_RES) continue;
+        uint16_t *row = buf + (screen_y - band_y0) * LCD_H_RES;
+        for (int ix = 0; ix < width; ix++) {
+            const int screen_x = left + ix;
+            if (screen_x < 0 || screen_x >= LCD_H_RES) continue;
+            const uint8_t *pixel = rgba + (iy * width + ix) * 4;
+            const uint8_t alpha = (uint8_t)((pixel[3] * 15U + 127U) / 255U);
+            if (!alpha) continue;
+            const uint16_t source = SWAP16(rgb565(pixel[0], pixel[1], pixel[2]));
+            row[screen_x] = blend_color_4bpp(row[screen_x], source, alpha);
+        }
+    }
 }
 
 static void draw_glyph(uint16_t *buf, int band_y0, int pen_x, int baseline,
@@ -795,8 +861,8 @@ static void render_handwriting(const handwriting_view_t *view,
                                const bool dirty[BAND_COUNT])
 {
     char title[20];
-    snprintf(title, sizeof(title), s_ui_language ? "Draw %u/6" : "手写%u/6",
-             (unsigned)view->page + 1);
+    snprintf(title, sizeof(title), s_ui_language ? "Draw %u/%u" : "自绘%u/%u",
+             (unsigned)view->page + 1, (unsigned)HANDWRITING_MAX_GLYPHS);
     uint8_t ink_r, ink_g, ink_b;
     handwriting_color_rgb(view->color, &ink_r, &ink_g, &ink_b);
     const uint16_t ink = SWAP16(rgb565(ink_r, ink_g, ink_b));
@@ -841,9 +907,18 @@ static void render_handwriting(const handwriting_view_t *view,
             }
         }
         draw_text_centered(buf, band_y0, title, LCD_H_RES / 2, 21);
-        draw_text_centered_rotated(buf, band_y0, s_ui_language ? "Delete" : "删除", 132, 384, 0.28f);
-        draw_text_centered_rotated(buf, band_y0, s_ui_language ? "Next" : "下一个", 233, 405, 0.0f);
-        draw_text_centered_rotated(buf, band_y0, s_ui_language ? "Done" : "确定", 334, 384, -0.28f);
+        draw_text_centered_rotated(buf, band_y0,
+                                   s_ui_language ? "Return" : "返回",
+                                   100, 385, 0.67f);
+        draw_text_centered_rotated(buf, band_y0,
+                                   s_ui_language ? "Delete" : "删除",
+                                   182, 424, 0.24f);
+        draw_text_centered_rotated(buf, band_y0,
+                                   s_ui_language ? "Next" : "下一个",
+                                   284, 424, -0.24f);
+        draw_text_centered_rotated(buf, band_y0,
+                                   s_ui_language ? "Done" : "确定",
+                                   366, 385, -0.67f);
         display_flush_band(band, buf);
     }
 }
@@ -1440,7 +1515,7 @@ static uint16_t boot_fade_rgb565(uint16_t source, float opacity)
 static void draw_boot_logo(uint16_t *buf, int band_y0, float opacity)
 {
     const int logo_x = (LCD_H_RES - BOOT_LOGO_WIDTH) / 2;
-    const int logo_y = 56;
+    const int logo_y = (LCD_V_RES - BOOT_LOGO_HEIGHT) / 2;
     const int first_y = band_y0 > logo_y ? band_y0 : logo_y;
     const int last_y = band_y0 + BAND_ROWS < logo_y + BOOT_LOGO_HEIGHT ?
                        band_y0 + BAND_ROWS : logo_y + BOOT_LOGO_HEIGHT;
@@ -1460,13 +1535,26 @@ static void draw_boot_band(uint16_t *buf, int band_y0, float opacity,
     memset(buf, 0, BAND_PIXELS * sizeof(uint16_t));
     draw_boot_logo(buf, band_y0, opacity);
     const bool chinese = language == 0;
+    const char *brand_name = chinese ? "时迹" : "ChronoTrace";
+    const ui_font_t *brand_font = chinese ? ui_font_brand_title() :
+                                           ui_font_brand_english();
+    const int brand_y = chinese ? 402 : 407;
+    const int brand_spacing = chinese ? 5 : 2;
+    // A restrained amber halo gives the serif wordmark a crafted, luminous
+    // character without softening its small-screen strokes.
+    const uint16_t glow = boot_fade_color(153, 73, 18, opacity * 0.46f);
+    draw_text_centered_spaced(buf, band_y0, brand_name, 232, brand_y,
+                              brand_font, brand_spacing, glow);
+    draw_text_centered_spaced(buf, band_y0, brand_name, 234, brand_y,
+                              brand_font, brand_spacing, glow);
+    draw_text_centered_spaced(buf, band_y0, brand_name, 233, brand_y - 1,
+                              brand_font, brand_spacing, glow);
+    draw_text_centered_spaced(buf, band_y0, brand_name, 233, brand_y + 1,
+                              brand_font, brand_spacing, glow);
     draw_text_centered_spaced(buf, band_y0,
-                              chinese ? "时迹" : "ChronoTrace",
-                              233, chinese ? 337 : 344,
-                              chinese ? ui_font_brand_title() :
-                                        ui_font_brand_english(),
-                              chinese ? 5 : 2,
-                              boot_fade_color(246, 248, 252, opacity));
+                              brand_name, 233, brand_y, brand_font,
+                              brand_spacing,
+                              boot_fade_color(255, 241, 221, opacity));
 }
 
 void render_show_boot_splash(uint8_t language)
@@ -1572,10 +1660,10 @@ void render_show_bluetooth_setup(uint8_t language, bool connected, bool error)
 static void draw_settings_particle_icon(uint16_t *buf, int band_y0,
                                         int cx, int cy, int row)
 {
-    static const uint8_t colors[5][3] = {
+    static const uint8_t colors[6][3] = {
         {30, 216, 255}, {115, 105, 255},
         {255, 106, 150}, {255, 196, 65},
-        {74, 232, 170},
+        {74, 232, 170}, {194, 112, 255},
     };
     const float now = (float)(esp_timer_get_time() % 12000000LL) / 1000000.0f;
     const uint16_t core = SWAP16(rgb565(colors[row][0], colors[row][1],
@@ -1650,18 +1738,19 @@ static void draw_settings_band(uint16_t *buf, int band_y0)
         "Wi-Fi", english ? "Bluetooth" : "蓝牙",
         english ? "City" : "城市", english ? "Language" : "语言"
     };
-    const char *device_labels[3] = {
+    const char *device_labels[4] = {
         english ? "Sound" : "声音", english ? "Brightness" : "亮度",
-        english ? "Haptic" : "震动"
+        english ? "Haptic" : "震动",
+        english ? "Reactive" : "音乐律动"
     };
     const int sound_choice = s_settings_volume == 0 ? 2 :
                              (s_settings_volume < 68 ? 1 : 0);
     const int brightness_choice = s_settings_brightness >= 78 ? 0 :
                                   (s_settings_brightness >= 37 ? 1 : 2);
-    const int row_count = device_page ? 3 : 4;
+    const int row_count = 4;
     for (int row = 0; row < row_count; row++) {
-        const int top = device_page ? 86 + row * 72 : 78 + row * 58;
-        const int row_height = device_page ? 56 : 48;
+        const int top = 78 + row * 58;
+        const int row_height = 48;
         draw_round_rect(buf, band_y0, 48, top, 418, top + row_height,
                         device_page ? 21 : 18,
                         SWAP16(rgb565(11, 18, 25)));
@@ -1756,13 +1845,20 @@ static void draw_settings_band(uint16_t *buf, int band_y0)
                                      choices[i], brightness_choice == i, true,
                                      255, 196, 65);
             }
-        } else {
+        } else if (device_page && row == 2) {
             draw_settings_option(buf, band_y0, 194, 298, cy,
                                  english ? "On" : "开", s_settings_haptic,
                                  true, 74, 232, 170);
             draw_settings_option(buf, band_y0, 306, 412, cy,
                                  english ? "Off" : "关", !s_settings_haptic,
                                  true, 74, 232, 170);
+        } else {
+            draw_settings_option(buf, band_y0, 194, 298, cy,
+                                 english ? "On" : "开", s_reactive,
+                                 true, 194, 112, 255);
+            draw_settings_option(buf, band_y0, 306, 412, cy,
+                                 english ? "Off" : "关", !s_reactive,
+                                 true, 194, 112, 255);
         }
     }
 
@@ -1915,7 +2011,7 @@ static void draw_wifi_editor_band(uint16_t *buf, int band_y0)
         }
         if (s_wifi_editor_ssid_count == 0) {
             draw_text_centered_spaced(buf, band_y0,
-                                      english ? "No networks found" : "未找到网络",
+                                      english ? "Searching for networks" : "网络搜索中",
                                       233, 207, ui_font_message(), 0,
                                       SWAP16(rgb565(130, 145, 157)));
         }
@@ -2088,6 +2184,234 @@ static void draw_weather_band(uint16_t *buf, int band_y0)
                               233, 407, ui_font_timer_label(), 0, quiet);
 }
 
+static void draw_shape_picker_miniature(uint16_t *buf, int band_y0,
+                                        int item, int cx, int cy)
+{
+    enum { MINIATURE_SIZE = 26 };
+    const int left = cx - MINIATURE_SIZE / 2;
+    const int top = cy - MINIATURE_SIZE / 2;
+    if (top + MINIATURE_SIZE <= band_y0 || top >= band_y0 + BAND_ROWS) return;
+
+    uint8_t library_bitmap[HANDWRITING_BYTES];
+    const uint8_t *bitmap = NULL;
+    if (s_shape_picker_animation) {
+        if (!animation_library_bitmap((uint8_t)item, 0.5f, library_bitmap)) return;
+        bitmap = library_bitmap;
+    } else if (item < SHAPE_LIBRARY_COUNT) {
+        if (!shape_library_bitmap((uint8_t)item, library_bitmap)) return;
+        bitmap = library_bitmap;
+    } else {
+        const uint8_t custom = (uint8_t)(item - SHAPE_LIBRARY_COUNT);
+        bitmap = handwriting_glyph(custom);
+        if (!bitmap) return;
+    }
+
+    // Text-adjacent picker miniatures use one calm cyan for a cleaner list.
+    // Full-size built-in playback remains randomly coloured, while custom
+    // drawings still retain their chosen colour outside this picker.
+    uint8_t r, g, b;
+    handwriting_color_rgb(HANDWRITING_DEFAULT_COLOR, &r, &g, &b);
+    const uint16_t color = SWAP16(rgb565(r, g, b));
+    for (int dy = 0; dy < MINIATURE_SIZE; dy++) {
+        const int screen_y = top + dy;
+        if (screen_y < band_y0 || screen_y >= band_y0 + BAND_ROWS) continue;
+        const int source_y0 = dy * HANDWRITING_H / MINIATURE_SIZE;
+        int source_y1 = (dy + 1) * HANDWRITING_H / MINIATURE_SIZE;
+        if (source_y1 <= source_y0) source_y1 = source_y0 + 1;
+        uint16_t *row = buf + (screen_y - band_y0) * LCD_H_RES;
+        for (int dx = 0; dx < MINIATURE_SIZE; dx++) {
+            const int source_x0 = dx * HANDWRITING_W / MINIATURE_SIZE;
+            int source_x1 = (dx + 1) * HANDWRITING_W / MINIATURE_SIZE;
+            if (source_x1 <= source_x0) source_x1 = source_x0 + 1;
+            bool ink = false;
+            for (int sy = source_y0; sy < source_y1 && !ink; sy++) {
+                for (int sx = source_x0; sx < source_x1; sx++) {
+                    const int bit = sy * HANDWRITING_W + sx;
+                    if (bitmap[bit >> 3] & (1U << (bit & 7))) {
+                        ink = true;
+                        break;
+                    }
+                }
+            }
+            if (ink) row[left + dx] = color;
+        }
+    }
+}
+
+static void draw_shape_picker_band(uint16_t *buf, int band_y0)
+{
+    memset(buf, 0, BAND_PIXELS * sizeof(uint16_t));
+    const bool english = s_ui_language != 0;
+    const int total = s_shape_picker_animation ? ANIMATION_LIBRARY_COUNT :
+                      SHAPE_LIBRARY_COUNT + s_shape_picker_custom_count;
+    const int pages = total > 0 ?
+        (total + SHAPE_PICKER_PAGE_SIZE - 1) / SHAPE_PICKER_PAGE_SIZE : 1;
+    int page = s_shape_picker_page;
+    if (page >= pages) page = pages - 1;
+    const uint16_t white = SWAP16(rgb565(239, 246, 250));
+    const uint16_t quiet = SWAP16(rgb565(115, 139, 151));
+    const uint16_t cyan = SWAP16(rgb565(43, 219, 255));
+    const uint16_t green = SWAP16(rgb565(74, 232, 170));
+
+    draw_text_centered_spaced(buf, band_y0,
+                              s_shape_picker_animation ?
+                              (english ? "Animation Library" : "动画选择") :
+                              (english ? "Shape Library" : "图形选择"),
+                              233, 4, ui_font_message(), 0, white);
+    char status[32];
+    if (s_shape_picker_animation) {
+        snprintf(status, sizeof(status), english ? "Swipe up/down  Selected %u" :
+                 "上下滑动切换  已选%u个",
+                 (unsigned)(s_animation_picker_selected ? 1 : 0));
+    } else {
+        snprintf(status, sizeof(status), english ? "Page %d/%d  Selected %u" :
+                 "第%d/%d页  已选%u个", page + 1, pages,
+                 (unsigned)s_shape_picker_selection_count);
+    }
+    draw_text_centered_spaced(buf, band_y0, status, 233, 34,
+                              ui_font_timer_label(), 0, quiet);
+
+    for (int cell = 0; cell < SHAPE_PICKER_PAGE_SIZE; cell++) {
+        const int item = page * SHAPE_PICKER_PAGE_SIZE + cell;
+        if (item >= total) break;
+        const int column = cell & 1;
+        const int row = cell >> 1;
+        // The circular aperture is narrowest across the first row. Inset its
+        // two cards symmetrically so wide miniatures such as Wave stay fully
+        // visible instead of being clipped by the left edge of the AMOLED.
+        const int x0 = column ? 242 : (row == 0 ? 72 : 42);
+        const int x1 = column ? (row == 0 ? 394 : 424) : 224;
+        const int y0 = 65 + row * 44;
+        const int y1 = y0 + 40;
+        const uint8_t rank = s_shape_picker_animation ?
+                             (s_animation_picker_selected &&
+                              item == s_animation_picker_item ? 1 : 0) :
+                             s_shape_picker_rank[item];
+        draw_round_rect(buf, band_y0, x0, y0, x1, y1, 14,
+                        rank ? SWAP16(rgb565(13, 69, 76)) :
+                               SWAP16(rgb565(10, 23, 30)));
+        if (rank) {
+            draw_round_rect(buf, band_y0, x0 + 3, y0 + 3, x1 - 3, y1 - 3, 11,
+                            SWAP16(rgb565(8, 33, 40)));
+        }
+        char custom[20];
+        const char *name;
+        if (s_shape_picker_animation) {
+            name = animation_library_name((uint8_t)item, english);
+        } else if (item < SHAPE_LIBRARY_COUNT) {
+            name = shape_library_name((uint8_t)item, english);
+        } else {
+            snprintf(custom, sizeof(custom), english ? "Custom %d" : "自绘%d",
+                     item - SHAPE_LIBRARY_COUNT + 1);
+            name = custom;
+        }
+        draw_shape_picker_miniature(buf, band_y0, item, x0 + 30,
+                                    (y0 + y1) / 2);
+        draw_text_centered_in_rect(buf, band_y0, name, x0 + 50, y0,
+                                   x1 - (rank ? 29 : 8), y1,
+                                   ui_font_timer_label(), 0,
+                                   rank ? green : white);
+        if (rank) {
+            char number[5];
+            snprintf(number, sizeof(number), "%u", (unsigned)rank);
+            draw_disc(buf, band_y0, x1 - 16, y0 + 15, 10, cyan);
+            draw_text_centered_in_rect(buf, band_y0, number,
+                                       x1 - 26, y0 + 5, x1 - 6, y0 + 25,
+                                       ui_font_timer_label(), 0,
+                                       SWAP16(rgb565(2, 16, 20)));
+        }
+    }
+
+    // Match the settings screen's strong yellow/blue edge-clipped actions.
+    draw_round_rect(buf, band_y0, -28, 340, 230, 396, 22,
+                    SWAP16(rgb565(72, 53, 10)));
+    draw_round_rect(buf, band_y0, -26, 342, 228, 394, 20,
+                    SWAP16(rgb565(247, 185, 36)));
+    draw_round_rect(buf, band_y0, 236, 340, 493, 396, 22,
+                    SWAP16(rgb565(8, 48, 92)));
+    draw_round_rect(buf, band_y0, 238, 342, 491, 394, 20,
+                    SWAP16(rgb565(28, 125, 245)));
+    draw_text_centered_in_rect(buf, band_y0,
+                               s_shape_picker_animation ?
+                               (english ? "Shapes" : "图形") :
+                               (english ? "Draw" : "自绘"),
+                               48, 342, 228, 394,
+                               ui_font_timer_label(), 0,
+                               SWAP16(rgb565(27, 24, 16)));
+    draw_text_centered_in_rect(buf, band_y0, english ? "Play" : "播放",
+                               238, 342, 418, 394,
+                               ui_font_timer_label(), 0,
+                               SWAP16(rgb565(247, 250, 255)));
+    if (s_shape_picker_animation) {
+        // Animation items cannot be deleted. Use the whole circular bottom
+        // cap as one generous exit target while retaining the same flat style.
+        const uint16_t exit_green = SWAP16(rgb565(35, 205, 110));
+        const int cx = LCD_H_RES / 2;
+        const int cy = LCD_V_RES / 2;
+        const int radius = LCD_H_RES / 2 - 1;
+        for (int x = 0; x < LCD_H_RES; x++) {
+            const int dx = x - cx;
+            const int bottom = cy + (int)lroundf(sqrtf(fmaxf(
+                0.0f, (float)(radius * radius - dx * dx))));
+            for (int y = 409; y <= bottom; y++) {
+                if (y < band_y0 || y >= band_y0 + BAND_ROWS) continue;
+                buf[(y - band_y0) * LCD_H_RES + x] = exit_green;
+            }
+        }
+        draw_text_centered_in_rect(buf, band_y0,
+                                   english ? "Exit" : "退出",
+                                   110, 410, 356, 452,
+                                   ui_font_timer_label(), 0,
+                                   SWAP16(rgb565(255, 255, 255)));
+        return;
+    }
+    bool delete_enabled = false;
+    for (int item = SHAPE_LIBRARY_COUNT; item < total; item++) {
+        if (s_shape_picker_rank[item]) {
+            delete_enabled = true;
+            break;
+        }
+    }
+    // Split the bottom cap with the same five-pixel minimum center gap and
+    // 22-pixel inward corner radius as Draw/Play.
+    const uint16_t exit_green = SWAP16(rgb565(35, 205, 110));
+    const uint16_t action_red = SWAP16(rgb565(255, 45, 55));
+    const uint16_t delete_text = delete_enabled ?
+        SWAP16(rgb565(255, 255, 255)) : SWAP16(rgb565(255, 238, 240));
+    const int bottom_center_x = LCD_H_RES / 2;
+    const int bottom_center_y = LCD_V_RES / 2;
+    const int bottom_radius = LCD_H_RES / 2 - 1;
+    for (int x = 0; x < LCD_H_RES; x++) {
+        if (x > 230 && x < 236) continue;
+        const int dx = x - bottom_center_x;
+        const int bottom = bottom_center_y + (int)lroundf(sqrtf(fmaxf(
+            0.0f, (float)(bottom_radius * bottom_radius - dx * dx))));
+        int top = 409;
+        if (x > 208 && x <= 230) {
+            const int corner_dx = x - 208;
+            top = 431 - (int)sqrtf((float)(22 * 22 - corner_dx * corner_dx));
+        } else if (x >= 236 && x < 258) {
+            const int corner_dx = 258 - x;
+            top = 431 - (int)sqrtf((float)(22 * 22 - corner_dx * corner_dx));
+        }
+        if (bottom < top) continue;
+        const uint16_t color = x <= 230 ? exit_green : action_red;
+        for (int y = top; y <= bottom; y++) {
+            if (y < band_y0 || y >= band_y0 + BAND_ROWS) continue;
+            buf[(y - band_y0) * LCD_H_RES + x] = color;
+        }
+    }
+    draw_text_centered_in_rect(buf, band_y0,
+                               english ? "Exit" : "退出",
+                               102, 410, 230, 452,
+                               ui_font_timer_label(), 0,
+                               SWAP16(rgb565(255, 255, 255)));
+    draw_text_centered_in_rect(buf, band_y0,
+                               english ? "Delete" : "删除",
+                               236, 410, 364, 452,
+                               ui_font_timer_label(), 0, delete_text);
+}
+
 static void draw_operation_guide_band(uint16_t *buf, int band_y0)
 {
     memset(buf, 0, BAND_PIXELS * sizeof(uint16_t));
@@ -2151,10 +2475,10 @@ static void draw_operation_guide_band(uint16_t *buf, int band_y0)
                         SWAP16(rgb565(9, 20, 24)));
         const char *gestures[7] = {
             english ? "Tap  -  Show time" : "点击  ·  显示时间",
-            english ? "Hold  -  Lock clock" : "长按  ·  常驻时钟",
-            english ? "Double  -  Burst / Restore" : "双击  ·  爆散／恢复手写",
+            english ? "Hold  -  Clock / Shape picker" : "长按  ·  时钟／图形选择",
+            english ? "Double  -  Random / Restore" : "双击  ·  随机图形／恢复手写",
             english ? "Swipe left  -  Weather" : "向左滑动  ·  粒子天气",
-            english ? "Swipe right  -  Wind" : "向右滑动  ·  粒子风",
+            english ? "Swipe right  -  Shape library" : "向右滑动  ·  图形库",
             english ? "Swipe up/down  -  Volume" : "上下滑动  ·  音量大小",
             english ? "Timer  -  Tap pause / Double exit" : "倒计时  ·  点击暂停／双击退出",
         };
@@ -2190,38 +2514,9 @@ static void draw_operation_guide_band(uint16_t *buf, int band_y0)
 
 static void draw_hourglass(uint16_t *buf, int band_y0)
 {
-    const int cx = kTimerUI.center_x;
-    const int cy = kTimerUI.hourglass_y;
-    const uint16_t frame = SWAP16(rgb565(238, 242, 245));
-    const uint16_t glass = SWAP16(rgb565(151, 220, 226));
-    const uint16_t sand = SWAP16(rgb565(255, 205, 72));
-
-    // Visible sand chambers and a narrow falling stream make the symbol read
-    // as a physical hourglass instead of two touching outline triangles.
-    draw_filled_triangle(buf, band_y0, cx - 6, cy - 9,
-                         cx + 6, cy - 9, cx, cy - 2, sand);
-    draw_line_round(buf, band_y0, cx, cy - 2, cx, cy + 5, 0, sand);
-    draw_filled_triangle(buf, band_y0, cx - 6, cy + 10,
-                         cx + 6, cy + 10, cx, cy + 5, sand);
-
-    // Glass waist. The short intermediate segments soften the silhouette and
-    // keep it distinct from a plain X at this small AMOLED icon size.
-    draw_line_round(buf, band_y0, cx - 10, cy - 12, cx - 8, cy - 7, 1, glass);
-    draw_line_round(buf, band_y0, cx - 8, cy - 7, cx - 2, cy - 1, 1, glass);
-    draw_line_round(buf, band_y0, cx - 2, cy + 1, cx - 8, cy + 7, 1, glass);
-    draw_line_round(buf, band_y0, cx - 8, cy + 7, cx - 10, cy + 12, 1, glass);
-    draw_line_round(buf, band_y0, cx + 10, cy - 12, cx + 8, cy - 7, 1, glass);
-    draw_line_round(buf, band_y0, cx + 8, cy - 7, cx + 2, cy - 1, 1, glass);
-    draw_line_round(buf, band_y0, cx + 2, cy + 1, cx + 8, cy + 7, 1, glass);
-    draw_line_round(buf, band_y0, cx + 8, cy + 7, cx + 10, cy + 12, 1, glass);
-
-    // Solid caps and small end posts provide the recognisable outer frame.
-    draw_line_round(buf, band_y0, cx - 13, cy - 15, cx + 13, cy - 15, 1, frame);
-    draw_line_round(buf, band_y0, cx - 13, cy + 15, cx + 13, cy + 15, 1, frame);
-    draw_line_round(buf, band_y0, cx - 11, cy - 14, cx - 10, cy - 12, 1, frame);
-    draw_line_round(buf, band_y0, cx + 11, cy - 14, cx + 10, cy - 12, 1, frame);
-    draw_line_round(buf, band_y0, cx - 10, cy + 12, cx - 11, cy + 14, 1, frame);
-    draw_line_round(buf, band_y0, cx + 10, cy + 12, cx + 11, cy + 14, 1, frame);
+    draw_rgba_icon(buf, band_y0, countdown_timer_icon_rgba,
+                   COUNTDOWN_TIMER_ICON_W, COUNTDOWN_TIMER_ICON_H,
+                   kTimerUI.center_x, kTimerUI.hourglass_y);
 }
 
 static void draw_play_pause_button(uint16_t *buf, int band_y0,
@@ -2229,6 +2524,11 @@ static void draw_play_pause_button(uint16_t *buf, int band_y0,
 {
     const int cx = kTimerUI.center_x;
     const int cy = kTimerUI.button_y;
+    if (!show_pause) {
+        draw_rgba_icon(buf, band_y0, countdown_play_icon_rgba,
+                       COUNTDOWN_PLAY_ICON_W, COUNTDOWN_PLAY_ICON_H, cx, cy);
+        return;
+    }
     const int radius = kTimerUI.button_visual_radius;
     draw_large_disc(buf, band_y0, cx, cy, radius + 3,
                     SWAP16(rgb565(3, 40, 43)));
@@ -2237,16 +2537,11 @@ static void draw_play_pause_button(uint16_t *buf, int band_y0,
     draw_large_disc(buf, band_y0, cx, cy, radius - 2,
                     SWAP16(rgb565(7, 11, 13)));
     const uint16_t icon = SWAP16(rgb565(247, 248, 250));
-    if (show_pause) {
-        for (int y = cy - 11; y <= cy + 11; y++) {
-            if (y < band_y0 || y >= band_y0 + BAND_ROWS) continue;
-            uint16_t *row = buf + (y - band_y0) * LCD_H_RES;
-            for (int x = cx - 8; x <= cx - 3; x++) row[x] = icon;
-            for (int x = cx + 3; x <= cx + 8; x++) row[x] = icon;
-        }
-    } else {
-        draw_filled_triangle(buf, band_y0, cx - 7, cy - 11,
-                             cx - 7, cy + 11, cx + 12, cy, icon);
+    for (int y = cy - 11; y <= cy + 11; y++) {
+        if (y < band_y0 || y >= band_y0 + BAND_ROWS) continue;
+        uint16_t *row = buf + (y - band_y0) * LCD_H_RES;
+        for (int x = cx - 8; x <= cx - 3; x++) row[x] = icon;
+        for (int x = cx + 3; x <= cx + 8; x++) row[x] = icon;
     }
 }
 
@@ -2413,6 +2708,7 @@ bool render_frame(void)
     static uint32_t settings_animation_seen;
     static uint32_t guide_revision_seen;
     static uint32_t guide_animation_seen;
+    static uint32_t shape_picker_revision_seen;
     static uint32_t wifi_editor_revision_seen;
     static uint32_t weather_revision_seen;
     if (s_network_busy) return false;
@@ -2453,6 +2749,23 @@ bool render_frame(void)
     }
     if (weather_revision_seen != 0) {
         weather_revision_seen = 0;
+        s_force_full = true;
+    }
+
+    if (s_shape_picker_visible) {
+        const uint32_t revision = s_shape_picker_revision;
+        if (revision == shape_picker_revision_seen && !s_force_full) return false;
+        for (int band = 0; band < BAND_COUNT; band++) {
+            uint16_t *buf = display_acquire_band();
+            draw_shape_picker_band(buf, band * BAND_ROWS);
+            display_flush_band(band, buf);
+        }
+        shape_picker_revision_seen = revision;
+        s_force_full = false;
+        return true;
+    }
+    if (shape_picker_revision_seen != 0) {
+        shape_picker_revision_seen = 0;
         s_force_full = true;
     }
 
