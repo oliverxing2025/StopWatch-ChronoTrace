@@ -949,15 +949,18 @@ static void set_settings_open(bool open)
 
 static void set_operation_guide(bool open, uint8_t page)
 {
+    static const char *const page_names[4] = {
+        "buttons", "touch", "shapes", "settings",
+    };
     s_operation_guide_open = open;
-    s_operation_guide_page = page ? 1 : 0;
+    s_operation_guide_page = page < 4 ? page : 0;
     s_settings_touch_down = false;
     s_settings_touch_target = 0;
     render_set_operation_guide(open, s_settings.language,
                                s_operation_guide_page);
     ESP_LOGI(TAG, "operation guide %s, page=%s",
              open ? "open" : "closed",
-             s_operation_guide_page ? "touch" : "buttons");
+             page_names[s_operation_guide_page]);
 }
 
 static uint8_t panel_brightness(uint8_t percent);
@@ -1292,9 +1295,11 @@ static void handle_operation_guide_tap(uint16_t x, uint16_t y)
         return;
     }
     if (y < 54 || y > 104) return;
-    uint8_t page = s_operation_guide_page;
-    if (x >= 82 && x <= 226) page = 0;
-    else if (x >= 240 && x <= 384) page = 1;
+    uint8_t page;
+    if (x >= 34 && x <= 128) page = 0;
+    else if (x >= 135 && x <= 229) page = 1;
+    else if (x >= 236 && x <= 330) page = 2;
+    else if (x >= 337 && x <= 431) page = 3;
     else return;
     settings_click_feedback();
     if (page != s_operation_guide_page) {
@@ -1366,8 +1371,20 @@ static void poll_settings_input(void)
                 }
             }
         } else if (target == 2) {
-            handle_operation_guide_tap(s_settings_touch_x,
-                                       s_settings_touch_y);
+            const int dx = (int)s_settings_touch_last_x -
+                           (int)s_settings_touch_x;
+            const int dy = (int)s_settings_touch_last_y -
+                           (int)s_settings_touch_y;
+            if (abs(dx) >= 56 && abs(dx) > abs(dy)) {
+                uint8_t page = s_operation_guide_page;
+                if (dx < 0 && page < 3) page++;
+                else if (dx > 0 && page > 0) page--;
+                settings_click_feedback();
+                set_operation_guide(true, page);
+            } else {
+                handle_operation_guide_tap(s_settings_touch_x,
+                                           s_settings_touch_y);
+            }
         } else if (target == 3) {
             handle_about_tap(s_settings_touch_x, s_settings_touch_y);
         }
@@ -1377,6 +1394,18 @@ static void poll_settings_input(void)
 static void handle_button(button_event_t event)
 {
     if (s_settings_open) {
+        if (s_operation_guide_open) {
+            if (event == BUTTON_EVENT_A_SHORT) {
+                const uint8_t page = s_operation_guide_page > 0 ?
+                                     s_operation_guide_page - 1 : 3;
+                settings_click_feedback();
+                set_operation_guide(true, page);
+            } else if (event == BUTTON_EVENT_B_SHORT) {
+                const uint8_t page = (s_operation_guide_page + 1) % 4;
+                settings_click_feedback();
+                set_operation_guide(true, page);
+            }
+        }
         if (!s_operation_guide_open && !s_about_open &&
             s_wifi_editor_mode == 0) {
             if (event == BUTTON_EVENT_A_SHORT) {

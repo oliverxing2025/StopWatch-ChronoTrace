@@ -145,7 +145,7 @@ static void start_station(void)
     s_state = WIFI_SETUP_CONNECTING;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_start());
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_connect());
-    ESP_LOGI(TAG, "connecting to saved Wi-Fi SSID %s", s_ssid);
+    ESP_LOGI(TAG, "connecting to saved Wi-Fi network");
 }
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -263,8 +263,16 @@ static esp_err_t save_post(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid form");
     }
     char body[513];
-    int received = httpd_req_recv(req, body, req->content_len);
-    if (received <= 0) return ESP_FAIL;
+    size_t received = 0;
+    while (received < (size_t)req->content_len) {
+        int chunk = httpd_req_recv(req, body + received,
+                                   (size_t)req->content_len - received);
+        if (chunk <= 0) {
+            memset(body, 0, sizeof(body));
+            return ESP_FAIL;
+        }
+        received += (size_t)chunk;
+    }
     body[received] = '\0';
     char timezone[12] = "480";
     if (!form_value(body, "ssid", s_ssid, sizeof(s_ssid)) || s_ssid[0] == '\0') {
@@ -576,7 +584,7 @@ esp_err_t wifi_setup_connect(const char *ssid, const char *password,
                  esp_err_to_name(err));
         return err;
     }
-    ESP_LOGI(TAG, "connecting with updated device-UI credentials: %s", s_ssid);
+    ESP_LOGI(TAG, "connecting with updated device-UI credentials");
     return ESP_OK;
 }
 

@@ -35,6 +35,7 @@ idf_component_register(
         esp_event
         esp_http_server
         esp_http_client
+        mbedtls
         esp_netif
         esp_wifi
         lwip

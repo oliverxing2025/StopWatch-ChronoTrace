@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "cJSON.h"
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -68,6 +69,7 @@ static esp_err_t http_get_json(const char *url, char **response)
         .timeout_ms = 12000,
         .buffer_size = 512,
         .buffer_size_tx = 512,
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) {
@@ -208,7 +210,7 @@ static esp_err_t locate_automatically(void)
 {
     char *response = NULL;
     esp_err_t err = http_get_json(
-        "http://ipwho.is/?fields=success,city,latitude,longitude", &response);
+        "https://ipwho.is/?fields=success,city,latitude,longitude", &response);
     if (err != ESP_OK) return err;
     cJSON *root = cJSON_Parse(response);
     free(response);
@@ -237,7 +239,7 @@ static esp_err_t geocode_manual_city(void)
     char url[320];
     url_encode(encoded, sizeof(encoded), s_manual_query);
     snprintf(url, sizeof(url),
-             "http://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=en&format=json",
+             "https://geocoding-api.open-meteo.com/v1/search?name=%s&count=1&language=en&format=json",
              encoded);
     char *response = NULL;
     esp_err_t err = http_get_json(url, &response);
@@ -267,7 +269,7 @@ static esp_err_t fetch_current_weather(void)
 {
     char url[512];
     snprintf(url, sizeof(url),
-             "http://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m&daily=temperature_2m_min,temperature_2m_max&timezone=auto&forecast_days=1",
+             "https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m&daily=temperature_2m_min,temperature_2m_max&timezone=auto&forecast_days=1",
              (double)s_latitude, (double)s_longitude);
     char *response = NULL;
     esp_err_t err = http_get_json(url, &response);
@@ -326,7 +328,8 @@ static void update_once(void)
     portEXIT_CRITICAL(&s_lock);
     if (err == ESP_OK) {
         save_cache();
-        ESP_LOGI(TAG, "weather updated: %s %.1f C code=%u", s_snapshot.city,
+        // Avoid exposing the user's approximate location in serial logs.
+        ESP_LOGI(TAG, "weather updated: %.1f C code=%u",
                  (double)s_snapshot.temperature_c, s_snapshot.weather_code);
     } else {
         ESP_LOGW(TAG, "weather update failed: %s", esp_err_to_name(err));

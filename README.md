@@ -1,23 +1,18 @@
 <div align="center">
   <img src="assets/design/chronotrace-logo-master.png" alt="ChronoTrace logo" width="120">
   <h1>ChronoTrace</h1>
-  <p><strong>Time, gravity, and sound become a pool of living particles.</strong></p>
+  <p><strong>When particles begin to flow, time is only one of their forms.</strong></p>
+  <p>An independent particle experience for M5Stack StopWatch.<br>The particles respond to gravity, touch, and sound, then assemble into time, shapes, and animations.</p>
   <p>
-    A standalone particle-clock firmware for M5Stack StopWatch,<br>
-    with fluid simulation, motion sensing, timers, visual forms, and music response.
-  </p>
-  <p>
-    <a href="#overview">Overview</a> ·
-    <a href="#current-firmware">v1.0.0</a> ·
-    <a href="#build--flash">Build &amp; flash</a> ·
+    <a href="#core-experience">Experience</a> ·
+    <a href="#installation">Installation</a> ·
     <a href="#controls">Controls</a> ·
-    <a href="#troubleshooting">Troubleshooting</a> ·
     <a href="#privacy">Privacy</a> ·
+    <a href="#license-and-attribution">License</a> ·
     <a href="README.zh-CN.md">简体中文</a>
   </p>
   <p>
     <img alt="Hardware: M5Stack StopWatch" src="https://img.shields.io/badge/hardware-M5Stack%20StopWatch-EA1D2C">
-    <img alt="ESP-IDF: 5.5" src="https://img.shields.io/badge/ESP--IDF-5.5-E7352C">
     <img alt="Display: 466 x 466 AMOLED" src="https://img.shields.io/badge/display-466%20%C3%97%20466%20AMOLED-111111">
     <img alt="Version: 1.0.0" src="https://img.shields.io/badge/version-1.0.0-F3A712">
     <img alt="Shapes: 40" src="https://img.shields.io/badge/shapes-40-22A6B3">
@@ -25,378 +20,164 @@
   </p>
 </div>
 
-## Current firmware
+<p align="center">
+  <img src="docs/images/chronotrace-hero.jpg" alt="ChronoTrace product concept" width="560">
+  <br><sub>Concept visual; the particle simulation is rendered live on the device.</sub>
+</p>
 
-Version `1.0.0` is the current source firmware. It runs as one standalone
-factory application on M5Stack StopWatch and keeps settings, Wi-Fi credentials,
-and player drawings in the device's NVS partition.
+## This is not a prerecorded animation
 
-The current build includes the complete particle clock and countdown experience,
-a 40-shape library, nine particle animations, up to 12 saved player drawings,
-music-driven particle jumps, on-device Wi-Fi setup, cached weather, Bluetooth
-time calibration, bilingual settings, and a branded About screen.
+Every visible particle participates in the live simulation. Tilt the device and
+the pool follows gravity. Touch the screen and particles gather, dissolve, and
+assemble into recognizable forms. In music-reactive mode, bass, mids, and treble
+drive different layers of particle motion.
 
-No public release binary is currently advertised from this README. Developers
-should build from source and verify the connected hardware and live partition
-table before writing any image.
+The current product version is `1.0.0`. Source and verified release assets are
+published through this repository's GitHub Releases page. Any M5Burner listing
+or Share Code is valid only when announced by the developer.
 
-## What's new in v1.0.0
+## Core experience
 
-- **Expanded visual library:** 40 built-in forms, random recoloring, ordered
-  multi-shape playback, and a circular picker optimized for the round display.
-- **Nine particle animations:** four directional arrows, heartbeat, DNA helix,
-  firework, asynchronous particle rain, and an `I LOVE YOU` marquee.
-- **Owned particle cohorts:** letters and animated structures keep their own
-  reserved particles instead of borrowing from one another while moving.
-- **Reactive particle motion:** bass, mids, and treble now drive actual pool
-  lift, side waves, sparks, and surface jumps rather than color alone.
-- **Player drawing library:** save, recolor, play, and delete up to 12 custom
-  forms from the on-device editor.
-- **Connection and device settings:** on-watch Wi-Fi scanning and password input,
-  Bluetooth time calibration, weather refresh, sound, brightness, haptics,
-  music reactivity, operation guide, and About page.
-- **Refined branding:** the ChronoTrace logo is used at boot and in About,
-  alongside developer, version, and copyright information.
+- **Live particle fluid:** motion, touch, collision, and rotation affect a real-time simulation rather than a looping video.
+- **Particle time:** tap to assemble the current time, hold it on screen, and switch between digital and analogue styles.
+- **Particle countdown:** select 1–60 minutes, pause, resume, and receive completion feedback.
+- **Shapes and animations:** 40 built-in forms, nine animations, random switching, and ordered loops.
+- **Draw your own forms:** create and save up to 12 colored drawings directly on the round display.
+- **Music reactivity:** external sound drives waves, jumps, and sparks instead of changing color alone.
+- **Connection and information:** on-device Wi-Fi setup, weather, Bluetooth time calibration, and Chinese/English UI.
+- **Sound and touch:** procedural audio, volume, brightness, and haptic settings are controlled on the device.
 
-### Safe update path
+<p align="center">
+  <img src="docs/images/chronotrace-particle-heart.jpg" alt="ChronoTrace particle heart" width="46%">
+  <img src="docs/images/chronotrace-particle-clock.jpg" alt="ChronoTrace particle clock" width="46%">
+</p>
 
-| Image | Flash offset | Use it when | What it preserves |
-| --- | ---: | --- | --- |
-| `build/stopwatch_chronotrace.bin` | `0x10000` | Updating an already verified ChronoTrace StopWatch | Preserves NVS, bootloader, and partition table |
+## Supported hardware
+
+<div align="center">
+<table align="center">
+  <thead>
+    <tr><th align="center">Device</th><th align="center">Support</th></tr>
+  </thead>
+  <tbody>
+    <tr><td align="center"><strong>M5Stack StopWatch</strong></td><td align="center">The only officially supported and physically tested target.</td></tr>
+    <tr><td align="center">Other ESP32-S3 devices</td><td align="center">Not supported; display, touch, RTC, audio, PMIC, and flash layouts differ.</td></tr>
+  </tbody>
+</table>
+</div>
+
+Confirm that the connected device is an M5Stack StopWatch. Do not flash this
+firmware to a different ESP32-S3 product.
+
+## Installation
+
+1. Install and open M5Burner from an official M5Stack source.
+2. Open ChronoTrace through the developer's official product page or Share Code.
+3. Confirm the target is **M5Stack StopWatch** and connect it with a USB data cable.
+4. Follow M5Burner's download and burn flow. Do not disconnect USB or remove power during the operation.
+5. On first boot, follow the on-screen flow to choose language, sound, brightness, and optional connectivity.
 
 > [!WARNING]
-> ChronoTrace uses one `factory` application partition; it is not a dual-app OTA
-> layout. Identify the physical device and read its live partition table before
-> writing. Back up NVS at `0x9000` with size `0x5000`, then update only the app
-> image at `0x10000`. Never copy offsets from another ESP32-S3 project.
+> Installing third-party firmware replaces the device's current program and may
+> remove or alter data saved by the previous firmware. Make sure you are authorized
+> to modify the device and have the official M5Stack recovery path available.
 
-## Overview
+ChronoTrace is not currently a generic dual-slot OTA image. End users should not
+guess flash offsets or apply `esptool.py` instructions from another project. Use
+the official M5Stack recovery firmware and instructions when recovery is needed.
 
-ChronoTrace is a standalone M5Stack StopWatch firmware derived from the solver
-and software renderer in
-[V4C38/esp32-fluidbox](https://github.com/V4C38/esp32-fluidbox). The display is
-not a prerecorded animation: every visible particle responds to gravity,
-rotation, touch, the selected formation, and—when enabled—external music.
-
-| | Capability | What it does |
-| --- | --- | --- |
-| **01** | Live particle fluid | Runs dual-core physics and software rendering inside the round 466 x 466 AMOLED volume. |
-| **02** | Time and orientation | Uses BMI270 motion data and the RX8130CE RTC for upright digital and analogue particle clocks. |
-| **03** | Particle countdown | Provides a circular 1–60 minute selector, `MM:SS` formation, pause/resume, and completion feedback. |
-| **04** | Shapes and animations | Offers 40 built-in shapes, nine animations, random switching, and ordered loop playback. |
-| **05** | Player drawings | Stores up to 12 custom shapes with per-drawing color, playback, and deletion. |
-| **06** | Sound and music response | Generates procedural device audio and maps external bass, mids, and treble to physical particle motion. |
-| **07** | Connection and information | Provides on-device Wi-Fi setup, cached weather, BLE time calibration, and Chinese/English UI. |
-
-## Device experience
-
-### Particle time
-
-- Tap the default scene to assemble the current `HH:MM` time.
-- Long-press to hold the clock. Double-tap a held clock to switch between
-  digital and analogue styles.
-- Countdown digit changes conserve shared particles: only a deficit is pulled
-  from the surrounding fluid, while surplus particles fall naturally under the
-  current gravity.
-- During charging, pool particles periodically jump up to form a short energy
-  line below the battery, dissolve, and assemble again.
-
-### Shape library
-
-The built-in library contains 40 forms. Built-in forms receive a fresh bright
-particle color when they appear; custom drawings retain the player's selected
-color.
-
-`Heart` `Star` `Pentagram` `Circle` `Square` `Triangle` `Diamond` `Hexagon`
-`Octagon` `Moon` `Infinity` `Cross` `Wave` `Flower 5` `Flower 6` `Flower 8`
-`Butterfly` `Clover` `Maple Leaf` `Drop` `Lightning` `Cloud` `Sun` `Rainbow`
-`Fish` `Bird` `Cat` `Rabbit` `Smile` `Music` `Crown` `Rocket`
-`Planet` `Snowflake` `Umbrella` `House` `Tree` `Mountains` `Apple` `Hourglass`
-
-Swipe right from the default scene to enter shape mode. Double-tap for a random
-shape or long-press to open the picker. Select several items in order to create
-a loop, or open the drawing editor to add player-made forms.
-
-### Animation library
-
-Swipe down in the shape picker to open animations; swipe up to return to shapes.
-
-| Animation | Particle behavior |
-| --- | --- |
-| Arrow up / down / left / right | Builds progressively, crosses nearly the full screen diameter, then naturally falls apart at the far edge. |
-| Heartbeat | Expands and contracts with a fast two-stage heartbeat rhythm. |
-| DNA helix | Moves a minimal double-chain structure with a continuous phase shift. |
-| Firework | Launches a preassembled particle ball with a short tail before it bursts. |
-| Particle rain | Runs multiple vertical streams with independent position, phase, and speed. |
-| `I LOVE YOU` | Raises and scrolls independently owned letter cohorts without borrowing particles between letters. |
-
-Recognizable formations do not morph directly into one another. ChronoTrace
-releases the old form into the real fluid first, leaves it visibly loose, and
-then attracts particles into the next form.
-
-### Music reactivity
-
-Music mode changes particle motion, not only color:
-
-- bass pulses lift surface particles out of the pool;
-- mids create alternating side waves;
-- treble produces sparse sparks and small jumps;
-- sustained strong beats add larger layered ejections while preserving fluid
-  gravity and collision behavior.
-
-Continuous procedural ambience is suppressed in reactive mode so the microphone
-does not repeatedly analyze the device's own speaker. Short UI sounds also have
-a brief analyzer guard interval.
-
-### What the main screens show
-
-| Screen | Purpose |
-| --- | --- |
-| Default fluid | Tilt-aware particle pool, themes, procedural sound, and music response. |
-| Particle clock | Timed or held digital/analogue time, always upright for the current pose. |
-| Countdown | Circular minute selector, particle digits, pause/resume, and cancel. |
-| Shape picker | 40 built-in forms, player drawings, ordered selection, play, exit, and delete. |
-| Animation picker | Nine particle animations selected from the same circular interface. |
-| Drawing editor | Round-screen practice grid, eight colors, return, delete, next, and confirm. |
-| Weather | Cached city, weather form, temperature, and daily range. |
-| Settings | Connection page, device page, operation guide, and branded About page. |
-
-## Hardware support
-
-| Hardware | Current support |
-| --- | --- |
-| **M5Stack StopWatch** | Primary and physically tested target: ESP32-S3R8, 466 x 466 CO5300 AMOLED, BMI270, CST820, RX8130CE, ES8311, and AW8737A. |
-| **Other ESP32-S3 boards** | Not supported. Display, touch, RTC, audio, PMIC, and flash layout are StopWatch-specific. |
-
-## Before you start
-
-- [ ] M5Stack StopWatch and a USB data cable.
-- [ ] ESP-IDF 5.5.x with ESP32-S3 support.
-- [ ] The serial port of the connected device, shown below as `<PORT>`.
-- [ ] Permission to preserve or back up the device's current NVS data.
-
-<p align="center"><strong>Inspect device → Back up NVS → Build → Flash app only → Verify → Monitor</strong></p>
-
-## Build & flash
-
-### Build from source
-
-Load ESP-IDF from the repository root and build:
-
-```sh
-. /path/to/esp-idf/export.sh
-idf.py set-target esp32s3
-idf.py build
-```
-
-The application image is produced at:
-
-```text
-build/stopwatch_chronotrace.bin
-```
-
-The normal build also runs `tools/check_ui_font_coverage.py`. Any changed
-Chinese or English UI string requires regenerated 20 px and 24 px Source Han
-Sans CN Medium subsets; do not bypass the coverage check.
-
-### Verify the physical device
-
-Read the chip identity, flash size, and live partition table before writing.
-The verified ChronoTrace layout is:
-
-| Region | Offset | Size |
-| --- | ---: | ---: |
-| NVS | `0x9000` | `0x5000` |
-| factory app | `0x10000` | 15 MB |
-
-Back up NVS before an ordinary firmware update:
-
-```sh
-esptool.py --chip esp32s3 --port <PORT> \
-  read_flash 0x9000 0x5000 backups/nvs-before-update.bin
-```
-
-### Flash the application only
-
-```sh
-esptool.py --chip esp32s3 --port <PORT> \
-  write_flash 0x10000 build/stopwatch_chronotrace.bin
-```
-
-Then independently verify the same image and inspect the 115200-baud startup
-log. A successful write alone is not a complete hardware acceptance.
-
-```sh
-esptool.py --chip esp32s3 --port <PORT> \
-  verify_flash 0x10000 build/stopwatch_chronotrace.bin
-python -m serial.tools.miniterm <PORT> 115200
-```
+Developers who want to build from source should follow the
+[development guide](docs/DEVELOPMENT.md).
 
 ## Controls
 
+For full instructions, see the [ChronoTrace User Guide](docs/USER_GUIDE.md).
+An on-device four-page quick guide is also available under
+**Settings → Operation Guide**.
+
 ### Physical buttons
 
-| Input | Action |
-| --- | --- |
-| A short | Open the player drawing editor; press again while editing to cancel. |
-| A double | Open or close the 1–60 minute countdown selector. |
-| A long | Cycle 650 / 900 / 1000 particle density. |
-| B short | Switch to the next particle theme. |
-| B double | Show battery level and charging state. |
-| B long | Toggle external-music reactivity. |
-| A + B long | Open or close Settings. |
+<div align="center">
+<table align="center">
+  <thead>
+    <tr><th align="center">Input</th><th align="center">Action</th></tr>
+  </thead>
+  <tbody>
+    <tr><td align="center">A short</td><td align="center">Open or leave the drawing editor.</td></tr>
+    <tr><td align="center">A double</td><td align="center">Open or close the countdown.</td></tr>
+    <tr><td align="center">A long</td><td align="center">Change particle density.</td></tr>
+    <tr><td align="center">B short</td><td align="center">Change the particle theme.</td></tr>
+    <tr><td align="center">B double</td><td align="center">Show battery and charging status.</td></tr>
+    <tr><td align="center">B long</td><td align="center">Toggle music reactivity.</td></tr>
+    <tr><td align="center">A + B long</td><td align="center">Open or close Settings.</td></tr>
+  </tbody>
+</table>
+</div>
 
-### Default-scene touch gestures
+### Default-scene gestures
 
-| Gesture | Action |
-| --- | --- |
-| Tap | Assemble the current particle time. |
-| Long press | Hold or release the always-on particle clock. |
-| Double tap | Switch digital/analogue clock while a clock is active; otherwise show a random form. |
-| Swipe left | Open the cached particle-weather view. |
-| Swipe right | Enter shape mode. |
-| Swipe up / down | Raise / lower speaker volume. |
-
-## Configuration
-
-Settings has two pages, switched by swiping or the A/B buttons:
-
-- **Connections:** Wi-Fi, on-device network search and password entry,
-  Bluetooth/time calibration, automatic city weather, and Chinese/English.
-- **Device:** sound, brightness, haptics, music reactivity, operation guide,
-  and About.
-
-The BLE peripheral is named `ChronoTrace`. Its custom GATT service accepts phone
-time packets to calibrate the RX8130CE. It does not receive or transmit player
-drawings or text. See [`docs/BLE_PROTOCOL.md`](docs/BLE_PROTOCOL.md).
-
-## Troubleshooting
-
-### `command not found: idf.py`
-
-Load the ESP-IDF environment in the current shell:
-
-```sh
-. /path/to/esp-idf/export.sh
-```
-
-### The device cannot enter flashing mode
-
-Confirm that no serial monitor owns `<PORT>`, use a real USB data cable, and
-retry with the matching `/dev/tty.*` port if `/dev/cu.*` does not complete the
-reset handshake. Do not erase flash as a first troubleshooting step.
-
-### The screen stays frozen after a flash
-
-First verify the app image independently, then hard-reset and read the serial
-log. Rewriting the bootloader or partition table is not an appropriate routine
-fix for an app-only update.
-
-### Wi-Fi shows no networks
-
-Wait for the asynchronous search to finish, confirm 2.4 GHz Wi-Fi is available,
-and reopen the on-device network selector. ESP32-S3 does not join 5 GHz-only
-networks.
-
-### Chinese or English text shows a replacement box
-
-Regenerate both Source Han Sans subsets and rebuild. Compilation should fail if
-a known runtime string is missing from either generated font resource.
-
-### Music changes color but particles do not jump
-
-Confirm music reactivity is enabled, device ambience is suppressed, and the
-external source is loud enough at the microphone. Bass energy drives the
-largest vertical pool motion.
+<div align="center">
+<table align="center">
+  <thead>
+    <tr><th align="center">Gesture</th><th align="center">Action</th></tr>
+  </thead>
+  <tbody>
+    <tr><td align="center">Tap</td><td align="center">Assemble the current time.</td></tr>
+    <tr><td align="center">Long press</td><td align="center">Hold or release the persistent particle clock.</td></tr>
+    <tr><td align="center">Double tap</td><td align="center">Switch digital/analogue style while a clock is visible; otherwise show a random form.</td></tr>
+    <tr><td align="center">Swipe left</td><td align="center">Open weather.</td></tr>
+    <tr><td align="center">Swipe right</td><td align="center">Enter shape mode.</td></tr>
+    <tr><td align="center">Swipe up / down</td><td align="center">Raise / lower volume.</td></tr>
+  </tbody>
+</table>
+</div>
 
 ## Privacy
 
-- Firmware contains no developer Wi-Fi password, API key, fixed token, or
-  hard-coded personal device identifier.
-- User Wi-Fi credentials are entered on the device and stored locally in NVS.
-- When Wi-Fi is enabled, weather uses network location and Open-Meteo data;
-  disabling Wi-Fi stops those network requests.
-- BLE is used for time calibration and does not upload drawings, playlists, or
-  audio.
+- No account is required, and the firmware contains no advertising or behavior-analytics module.
+- Wi-Fi credentials are entered by the user and stored locally in the device's NVS.
+- The provisioning page intentionally shows the Wi-Fi password as plain text; use it only in a private setting.
+- Automatic weather uses the public IP address to request an approximate city and coordinates from `ipwho.is`; manual mode sends the city entered by the user.
+- Coordinates are sent to Open-Meteo to obtain current conditions and the day's temperature range.
+- Drawings, microphone audio, and playback content are not uploaded. Microphone samples are processed locally for music reactivity.
+- Bluetooth is used for time calibration and does not transfer drawings or microphone audio.
+- Disabling Wi-Fi stops weather requests. Use the vendor's erase and recovery flow when local data must also be removed.
 
-Before publishing source, binaries, logs, or screenshots, review local paths,
-Git author identity, image metadata, generated configuration, and build output.
+See the [privacy notice](docs/PRIVACY.md) for details. Third-party services remain
+subject to their own privacy policies.
 
-## Project layout
+## Current limitations
 
-```text
-StopWatch-ChronoTrace/
-  assets/design/          Logo and brand source artwork
-  components/             Vendored hardware components
-  docs/                   Protocol and supporting documentation
-  main/                   Physics, rendering, interaction, audio, and network code
-  tools/                  Logo, icon, font generation, and coverage checks
-  CMakeLists.txt
-  README.md
-  README.zh-CN.md
-```
+- Only 2.4 GHz Wi-Fi is supported.
+- Automatic city detection is an approximate public-IP lookup, not GPS.
+- Weather and music response depend on the network, router, room acoustics, and microphone distance.
+- This version does not provide a general-purpose OTA path; follow the official release instructions for updates.
+- A general M5Burner image is not a guarantee against copying or reverse engineering.
 
-## Checks
+## Data removal and recovery
 
-Run from the repository root:
+- Disable Wi-Fi or Bluetooth from the connection settings.
+- Remove saved drawings from the shape picker.
+- To remove ChronoTrace completely, restore the device's official firmware through M5Stack's official M5Burner flow.
+- Confirm whether that recovery flow erases NVS when local data must also be deleted; rewriting only the app may preserve NVS.
+- If previous device data matters, follow the hardware vendor's backup guidance before restoring or replacing firmware.
 
-```sh
-python tools/check_ui_font_coverage.py
-idf.py build
-git diff --check
-```
+## Support and security reports
 
-The current ESP-IDF 5.5.3 build produces an application image of about 1.66 MiB
-inside the 15 MB factory partition. On the verified device, continuous runtime
-logs are approximately 56 FPS without a startup reboot loop.
+Use the official release page or developer announcement for support. Report
+security issues through GitHub's private vulnerability-reporting form; see
+[SECURITY.md](SECURITY.md). Do not post Wi-Fi credentials, device backups,
+serial numbers, or logs containing personal data.
 
-## Current limits
-
-- M5Stack StopWatch is the only supported hardware target.
-- No general-user factory image or public Release package is currently promised
-  by this README; the documented route is a verified source build and app-only
-  update.
-- Network and microphone behavior still depends on router, room acoustics, and
-  real-device conditions.
-- Long-duration animation loops, Wi-Fi/BLE coexistence, and every physical
-  orientation should be rechecked after large simulator or memory changes.
-
-## Contributing & security
-
-Keep hardware-specific changes scoped to StopWatch and preserve the live NVS
-layout. Do not commit credentials, device backups, serial logs with private data,
-or generated local build directories. Before a GitHub push, run a local secret
-and privacy review and confirm repository Secret Scanning and Push Protection.
-
-For a security-sensitive report, contact the repository owner privately instead
-of publishing credentials or device data in an issue.
-
-## Acknowledgements
-
-ChronoTrace stands on the work of many open-source projects and hardware teams.
-Special thanks to:
-
-- [V4C38/esp32-fluidbox](https://github.com/V4C38/esp32-fluidbox) for the
-  original fluid solver and rendering foundation that made this particle world
-  possible;
-- Espressif for ESP-IDF and the ESP32-S3 software ecosystem;
-- M5Stack for the StopWatch hardware platform and its open hardware resources;
-- Bosch Sensortec and the maintainers of the BMI270 sensor sources used by this
-  project;
-- Adobe and Google for the Source Han Sans and Source Han Serif type families;
-- every tester and friend who observed the device, reported visual or interaction
-  problems, and helped refine ChronoTrace one detail at a time.
-
-Thank you to everyone who explores, studies, or improves this project.
-
-## Copyright, assets & licenses
+## License and attribution
 
 ChronoTrace is developed by **Xiao Ao**. Copyright © 2026 Xiao Ao.
 
-- FluidBox-derived solver and renderer code is covered by the MIT terms in
-  [`LICENSE.FluidBox`](LICENSE.FluidBox).
-- Generated Source Han Sans subsets are covered by the SIL Open Font License in
-  [`LICENSE.SourceHanSans`](LICENSE.SourceHanSans).
-- Source Han Serif resources are covered by the SIL Open Font License in
-  [`LICENSE.SourceHanSerif`](LICENSE.SourceHanSerif).
-- Vendored components retain their own license files and notices.
+- Original ChronoTrace source code and documentation are released under the [MIT License](LICENSE).
+- FluidBox, fonts, and hardware components remain under their respective MIT, BSD-3-Clause, Apache-2.0, and SIL OFL terms.
+- The ChronoTrace name and logo identify official project releases; the MIT License does not authorize false claims of official endorsement.
+
+See the [third-party notices](THIRD_PARTY_NOTICES.md) for dependency attribution.
+
+ChronoTrace is independently developed and is not affiliated with, jointly
+developed by, or officially endorsed by M5Stack.

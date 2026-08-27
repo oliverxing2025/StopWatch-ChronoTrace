@@ -404,7 +404,7 @@ void render_set_operation_guide(bool visible, uint8_t language, uint8_t page)
 {
     s_ui_language = language ? 1 : 0;
     s_operation_guide_visible = visible;
-    s_operation_guide_page = page ? 1 : 0;
+    s_operation_guide_page = page < 4 ? page : 0;
     s_operation_guide_revision++;
     s_force_full = true;
 }
@@ -1562,7 +1562,11 @@ static void draw_boot_band(uint16_t *buf, int band_y0, float opacity,
     const char *brand_name = chinese ? "时迹" : "ChronoTrace";
     const ui_font_t *brand_font = chinese ? ui_font_brand_title() :
                                            ui_font_brand_english();
-    const int brand_y = chinese ? 402 : 407;
+    // Place the illuminated wordmark halfway between the logo's lower edge
+    // (y=357) and the round display's lower edge (y=466). The two fonts have
+    // different ink offsets, so their line tops differ while their visible
+    // centres both land at about y=411.
+    const int brand_y = chinese ? 388 : 393;
     const int brand_spacing = chinese ? 5 : 2;
     // A restrained amber halo gives the serif wordmark a crafted, luminous
     // character without softening its small-screen strokes.
@@ -2445,22 +2449,35 @@ static void draw_operation_guide_band(uint16_t *buf, int band_y0)
     const uint16_t white = SWAP16(rgb565(238, 243, 247));
     const uint16_t cyan = SWAP16(rgb565(30, 216, 255));
     const uint16_t green = SWAP16(rgb565(74, 232, 170));
+    const uint16_t purple = SWAP16(rgb565(194, 112, 255));
 
     draw_text_centered_spaced(buf, band_y0,
                               english ? "Operation Guide" : "操作指南",
                               233, 25, ui_font_message(), 0, white);
-    draw_settings_option(buf, band_y0, 82, 226, 78,
-                         english ? "Buttons" : "按键",
-                         page == 0, true, 255, 196, 65);
-    draw_settings_option(buf, band_y0, 240, 384, 78,
-                         english ? "Touch" : "触控",
-                         page == 1, true, 74, 232, 170);
+    static const int tab_x0[4] = {34, 135, 236, 337};
+    static const int tab_x1[4] = {128, 229, 330, 431};
+    const char *tabs[4] = {
+        english ? "Buttons" : "按键",
+        english ? "Touch" : "触控",
+        english ? "Shapes" : "图形",
+        english ? "Setup" : "设置",
+    };
+    static const uint8_t tab_colors[4][3] = {
+        {255, 196, 65}, {74, 232, 170},
+        {30, 216, 255}, {194, 112, 255},
+    };
+    for (int tab = 0; tab < 4; tab++) {
+        draw_settings_option(buf, band_y0, tab_x0[tab], tab_x1[tab], 82,
+                             tabs[tab], page == tab, true,
+                             tab_colors[tab][0], tab_colors[tab][1],
+                             tab_colors[tab][2]);
+    }
 
     const ui_font_t *font = ui_font_timer_label();
     if (page == 0) {
-        draw_round_rect(buf, band_y0, 34, 110, 225, 359, 22,
+        draw_round_rect(buf, band_y0, 34, 110, 225, 315, 22,
                         SWAP16(rgb565(22, 20, 9)));
-        draw_round_rect(buf, band_y0, 241, 110, 432, 359, 22,
+        draw_round_rect(buf, band_y0, 241, 110, 432, 315, 22,
                         SWAP16(rgb565(7, 21, 29)));
         draw_settings_particle_icon(buf, band_y0, 73, 142, 3);
         draw_settings_particle_icon(buf, band_y0, 280, 142, 0);
@@ -2483,7 +2500,7 @@ static void draw_operation_guide_band(uint16_t *buf, int band_y0)
             english ? "Hold  Reactive" : "长按  音乐律动",
         };
         for (int i = 0; i < 3; i++) {
-            const int top = 184 + i * 51;
+            const int top = 176 + i * 45;
             draw_text_centered_spaced(buf, band_y0, yellow_actions[i],
                                       130, top, font, 0, white);
             draw_text_centered_spaced(buf, band_y0, blue_actions[i],
@@ -2495,22 +2512,56 @@ static void draw_operation_guide_band(uint16_t *buf, int band_y0)
                                 0, SWAP16(rgb565(31, 54, 66)));
             }
         }
+        draw_round_rect(buf, band_y0, 86, 322, 380, 362, 16,
+                        SWAP16(rgb565(24, 31, 27)));
+        draw_text_centered_spaced(buf, band_y0,
+                                  english ? "Hold A+B  Settings" :
+                                            "A+B长按  设置",
+                                  233, 331, font, 0, green);
     } else {
         draw_round_rect(buf, band_y0, 42, 110, 424, 365, 24,
                         SWAP16(rgb565(9, 20, 24)));
-        const char *gestures[7] = {
-            english ? "Tap  -  Show time" : "点击  ·  显示时间",
-            english ? "Hold  -  Clock / Shape picker" : "长按  ·  时钟／图形选择",
-            english ? "Double  -  Random / Restore" : "双击  ·  随机图形／恢复手写",
-            english ? "Swipe left  -  Weather" : "向左滑动  ·  粒子天气",
-            english ? "Swipe right  -  Shape library" : "向右滑动  ·  图形库",
-            english ? "Swipe up/down  -  Volume" : "上下滑动  ·  音量大小",
-            english ? "Timer  -  Tap pause / Double exit" : "倒计时  ·  点击暂停／双击退出",
-        };
+        const char *gestures[7];
+        if (page == 1) {
+            const char *items[7] = {
+                english ? "Tap  -  Show time" : "点击  ·  显示时间",
+                english ? "Hold  -  Clock on / off" : "长按  ·  常显时钟开／关",
+                english ? "Double  -  Clock style / random" : "双击  ·  时钟样式／随机图形",
+                english ? "Swipe left  -  Weather" : "向左滑动  ·  粒子天气",
+                english ? "Swipe right  -  Shape library" : "向右滑动  ·  图形库",
+                english ? "Swipe up/down  -  Volume" : "上下滑动  ·  音量大小",
+                english ? "Timer  -  Tap pause / Double exit" : "倒计时  ·  点击暂停／双击退出",
+            };
+            memcpy(gestures, items, sizeof(gestures));
+        } else if (page == 2) {
+            const char *items[7] = {
+                english ? "Swipe left/right  -  Pages" : "左右滑动  ·  图形翻页",
+                english ? "Swipe down  -  Animations" : "向下滑动  ·  动画库",
+                english ? "Swipe up  -  Shapes" : "向上滑动  ·  图形库",
+                english ? "Tap  -  Select in order" : "点击  ·  按顺序选择",
+                english ? "Hold  -  Play selected" : "长按  ·  播放已选",
+                english ? "Draw  -  Save up to 12" : "自绘  ·  最多保存12个",
+                english ? "Delete  -  Custom only" : "删除  ·  仅限自绘",
+            };
+            memcpy(gestures, items, sizeof(gestures));
+        } else {
+            const char *items[7] = {
+                english ? "A / B  -  Switch settings" : "A／B键  ·  切换设置页",
+                english ? "Swipe  -  Switch settings" : "左右滑动  ·  切换设置页",
+                english ? "Wi-Fi  -  Search / connect" : "Wi-Fi  ·  搜索并连接",
+                english ? "Bluetooth  -  Sync phone time" : "蓝牙  ·  手机时间校准",
+                english ? "City  -  Refresh weather" : "城市  ·  刷新天气",
+                english ? "Device  -  Sound / light / haptic" : "设备  ·  声音／亮度／震动",
+                english ? "About  -  Version / copyright" : "关于  ·  版本与版权",
+            };
+            memcpy(gestures, items, sizeof(gestures));
+        }
         for (int i = 0; i < 7; i++) {
             const int top = 121 + i * 34;
             const int dot_x = 67;
-            const uint16_t dot_color = (i & 1) ? green : cyan;
+            const uint16_t dot_color = page == 2 ?
+                ((i & 1) ? cyan : purple) :
+                ((i & 1) ? green : cyan);
             draw_disc(buf, band_y0, dot_x, top + 11, 5, dot_color);
             draw_text_centered_spaced(buf, band_y0, gestures[i],
                                       246, top, font, 0, white);
