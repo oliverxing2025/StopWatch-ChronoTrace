@@ -14,6 +14,17 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
+# HTTPS weather refresh runs alongside display, audio and Wi-Fi. Keep the
+# short-lived TLS allocations in the 8 MB PSRAM so a manual refresh cannot
+# exhaust internal RAM. The task stack itself stays internal because certificate
+# bundle access can temporarily disable the external-memory cache.
+CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=n
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# At 240 MHz the ESP-IDF hardware AES path provides no speed advantage and
+# copies PSRAM TLS records into a large internal DMA buffer. Software AES can
+# process the PSRAM records directly, leaving internal RAM for display/Wi-Fi.
+CONFIG_MBEDTLS_HARDWARE_AES=n
+
 # ChronoTrace transfers tiny weather/time payloads rather than high-throughput
 # media. Keep Wi-Fi/BT coexistence inside the ESP32-S3 internal-RAM budget and
 # place eligible TCP/IP buffers in the 8 MB PSRAM.

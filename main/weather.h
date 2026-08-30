@@ -32,7 +32,10 @@ typedef struct {
 // creates the low-priority background updater. Network work starts only after
 // weather_refresh() is called for a connected Wi-Fi station.
 esp_err_t weather_init(void);
-void weather_refresh(void);
+// Starts one asynchronous weather update. Returns ESP_ERR_INVALID_STATE when
+// an update is already running, so callers never report a refresh that did not
+// actually start.
+esp_err_t weather_refresh(void);
 esp_err_t weather_use_automatic_location(void);
 esp_err_t weather_use_manual_city(const char *city);
 void weather_snapshot(weather_snapshot_t *snapshot);

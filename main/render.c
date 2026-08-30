@@ -84,7 +84,9 @@ static volatile bool s_settings_haptic;
 static volatile uint8_t s_settings_page;
 static volatile bool s_settings_wifi_enabled;
 static volatile uint8_t s_settings_wifi_state;
-static volatile bool s_settings_city_automatic = true;
+// 0 idle, 1 locating, 2 located, 3 updating weather,
+// 4 weather updated, 5 failed.
+static volatile uint8_t s_settings_weather_action;
 static volatile uint8_t s_settings_wifi_notice;
 static volatile int64_t s_settings_wifi_notice_until;
 static volatile uint32_t s_settings_revision;
@@ -322,7 +324,7 @@ void render_set_settings(bool visible, uint8_t language, bool bluetooth_on,
                          uint8_t volume, uint8_t brightness,
                          bool haptic_enabled, uint8_t page,
                          bool wifi_enabled, uint8_t wifi_state,
-                         bool city_automatic)
+                         uint8_t weather_action)
 {
     s_ui_language = language ? 1 : 0;
     s_settings_visible = visible;
@@ -336,7 +338,7 @@ void render_set_settings(bool visible, uint8_t language, bool bluetooth_on,
     s_settings_page = page ? 1 : 0;
     s_settings_wifi_enabled = wifi_enabled;
     s_settings_wifi_state = wifi_state;
-    s_settings_city_automatic = city_automatic;
+    s_settings_weather_action = weather_action <= 5 ? weather_action : 0;
     s_settings_revision++;
     s_force_full = true;
 }
@@ -1834,13 +1836,27 @@ static void draw_settings_band(uint16_t *buf, int band_y0)
                                  s_settings_bluetooth_connected,
                                  30, 216, 255);
         } else if (!device_page && row == 2) {
+            const bool location_busy = s_settings_weather_action == 1;
+            const bool location_done = s_settings_weather_action == 2;
+            const bool weather_busy = s_settings_weather_action == 3;
+            const bool weather_done = s_settings_weather_action == 4;
             draw_settings_option(buf, band_y0, 194, 298, cy,
-                                 english ? "Auto" : "自动",
-                                 s_settings_city_automatic, true,
+                                 location_busy ?
+                                     (english ? "Locating" : "定位中") :
+                                 location_done ?
+                                     (english ? "Located" : "已定位") :
+                                     (english ? "Locate" : "定位"),
+                                 location_busy || location_done,
+                                 !weather_busy,
                                  74, 232, 170);
             draw_settings_option(buf, band_y0, 306, 412, cy,
-                                 english ? "Refresh" : "刷新",
-                                 false, true,
+                                 weather_busy ?
+                                     (english ? "Updating" : "更新中") :
+                                 weather_done ?
+                                     (english ? "Updated" : "已更新") :
+                                     (english ? "Update" : "更新天气"),
+                                 weather_busy || weather_done,
+                                 !location_busy,
                                  30, 216, 255);
         } else if (!device_page && row == 3) {
             draw_settings_option(buf, band_y0, 194, 298, cy,

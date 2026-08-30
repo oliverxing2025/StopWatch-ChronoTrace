@@ -18,6 +18,7 @@
 
 #define WEATHER_REFRESH_MS (30 * 60 * 1000)
 #define HTTP_CAPACITY 6144
+#define WEATHER_TASK_STACK_SIZE 6144
 
 static const char *TAG = "weather";
 static esp_timer_handle_t s_periodic_timer;
@@ -351,7 +352,7 @@ static void weather_task(void *argument)
 static void periodic_refresh(void *argument)
 {
     (void)argument;
-    weather_refresh();
+    (void)weather_refresh();
 }
 
 esp_err_t weather_init(void)
@@ -380,23 +381,25 @@ esp_err_t weather_init(void)
     return err;
 }
 
-void weather_refresh(void)
+esp_err_t weather_refresh(void)
 {
     portENTER_CRITICAL(&s_lock);
     if (s_busy) {
         portEXIT_CRITICAL(&s_lock);
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
     s_busy = true;
     s_snapshot.state = WEATHER_STATE_UPDATING;
     portEXIT_CRITICAL(&s_lock);
-    if (xTaskCreate(weather_task, "weather", 3584, NULL, 3, NULL) != pdPASS) {
+    if (xTaskCreate(weather_task, "weather", WEATHER_TASK_STACK_SIZE,
+                    NULL, 3, NULL) != pdPASS) {
         portENTER_CRITICAL(&s_lock);
         s_busy = false;
         s_snapshot.state = WEATHER_STATE_ERROR;
         portEXIT_CRITICAL(&s_lock);
-        return;
+        return ESP_ERR_NO_MEM;
     }
+    return ESP_OK;
 }
 
 esp_err_t weather_use_automatic_location(void)
@@ -406,9 +409,8 @@ esp_err_t weather_use_automatic_location(void)
     s_snapshot.daily_valid = false;
     s_have_coordinates = false;
     portEXIT_CRITICAL(&s_lock);
-    save_cache();
-    weather_refresh();
-    return ESP_OK;
+    const esp_err_t err = save_cache();
+    return err == ESP_OK ? weather_refresh() : err;
 }
 
 esp_err_t weather_use_manual_city(const char *city)
@@ -422,9 +424,8 @@ esp_err_t weather_use_manual_city(const char *city)
     s_snapshot.daily_valid = false;
     s_have_coordinates = false;
     portEXIT_CRITICAL(&s_lock);
-    save_cache();
-    weather_refresh();
-    return ESP_OK;
+    const esp_err_t err = save_cache();
+    return err == ESP_OK ? weather_refresh() : err;
 }
 
 void weather_snapshot(weather_snapshot_t *snapshot)

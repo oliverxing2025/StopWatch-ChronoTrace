@@ -111,6 +111,10 @@ static bool s_weather_open;
 static bool s_weather_transition_pending;
 static int64_t s_weather_transition_deadline_us;
 static weather_state_t s_weather_state_seen = WEATHER_STATE_IDLE;
+// Mirrors the settings renderer: 0 idle, 1 locating, 2 located,
+// 3 updating weather, 4 weather updated, 5 failed.
+static uint8_t s_settings_weather_action;
+static int64_t s_settings_weather_action_until_us;
 static bool s_shape_mode;
 static bool s_shape_picker_open;
 static bool s_shape_picker_animation;
@@ -792,7 +796,7 @@ static void refresh_settings_screen(void)
                         s_settings.haptic_enabled, s_settings_page,
                         s_settings.wifi_enabled,
                         (uint8_t)wifi_setup_state(),
-                        weather.automatic_location);
+                        s_settings_weather_action);
 }
 
 static void refresh_weather_screen(void)
@@ -1074,14 +1078,32 @@ static void handle_settings_tap(uint16_t x, uint16_t y)
         const int choice = settings_choice_from_x(x, 2);
         if (choice < 0) return;
         settings_click_feedback();
-        if (choice == 0) {
-            weather_use_automatic_location();
-            render_show_message(ui_text("自动定位中", "Locating"));
-            refresh_settings_screen();
-        } else {
-            weather_refresh();
-            render_show_message(ui_text("天气刷新中", "Refreshing weather"));
+        if (wifi_setup_state() != WIFI_SETUP_CONNECTED) {
+            render_show_message(ui_text("请先连接 Wi-Fi", "Connect Wi-Fi first"));
+            return;
         }
+        if (s_settings_weather_action == 1 ||
+            s_settings_weather_action == 3) {
+            render_show_message(ui_text("天气正在更新", "Weather update in progress"));
+            return;
+        }
+        const esp_err_t err = choice == 0 ?
+                              weather_use_automatic_location() :
+                              weather_refresh();
+        if (err != ESP_OK) {
+            render_show_message(err == ESP_ERR_INVALID_STATE ?
+                                ui_text("天气正在更新", "Weather update in progress") :
+                                ui_text("天气更新失败", "Weather update failed"));
+            return;
+        }
+        s_settings_weather_action = choice == 0 ? 1 : 3;
+        s_settings_weather_action_until_us = 0;
+        if (choice == 0) {
+            render_show_message(ui_text("定位中", "Locating"));
+        } else {
+            render_show_message(ui_text("天气更新中", "Updating weather"));
+        }
+        refresh_settings_screen();
         return;
     } else if (s_settings_page == 0 && row == 3) {
         const int choice = settings_choice_from_x(x, 2);
@@ -2058,9 +2080,36 @@ static void sim_task(void *arg)
             }
             update_animation_frame(now);
             if (weather.state != s_weather_state_seen) {
+                const weather_state_t previous_weather_state =
+                    s_weather_state_seen;
                 s_weather_state_seen = weather.state;
                 render_set_network_busy(weather.state == WEATHER_STATE_UPDATING);
+                if ((s_settings_weather_action == 1 ||
+                     s_settings_weather_action == 3) &&
+                    previous_weather_state == WEATHER_STATE_UPDATING &&
+                    weather.state != WEATHER_STATE_UPDATING) {
+                    if (weather.state == WEATHER_STATE_READY) {
+                        const bool location_refresh =
+                            s_settings_weather_action == 1;
+                        s_settings_weather_action = location_refresh ? 2 : 4;
+                        render_show_message(location_refresh ?
+                                            ui_text("已定位", "Located") :
+                                            ui_text("已经更新天气", "Weather updated"));
+                    } else {
+                        s_settings_weather_action = 5;
+                        render_show_message(ui_text("天气更新失败",
+                                                    "Weather update failed"));
+                    }
+                    s_settings_weather_action_until_us = now + 2200000LL;
+                }
                 if (s_weather_open) refresh_weather_screen();
+                if (s_settings_open) refresh_settings_screen();
+            }
+            if (s_settings_weather_action >= 2 &&
+                s_settings_weather_action_until_us != 0 &&
+                now >= s_settings_weather_action_until_us) {
+                s_settings_weather_action = 0;
+                s_settings_weather_action_until_us = 0;
                 if (s_settings_open) refresh_settings_screen();
             }
             uint16_t x = 0, y = 0;

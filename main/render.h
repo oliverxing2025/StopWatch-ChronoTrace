@@ -34,7 +34,7 @@ void render_set_settings(bool visible, uint8_t language, bool bluetooth_on,
                          uint8_t volume, uint8_t brightness,
                          bool haptic_enabled, uint8_t page,
                          bool wifi_enabled, uint8_t wifi_state,
-                         bool city_automatic);
+                         uint8_t weather_action);
 // Temporary result banner shown above the settings page: 1 connecting,
 // 2 connected, 3 failed, 0 hidden.
 void render_set_wifi_notice(uint8_t state);
